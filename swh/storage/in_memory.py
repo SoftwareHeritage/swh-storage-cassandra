@@ -1114,8 +1114,6 @@ class Storage:
             self._origin_visits.append([])
             key = (origin['type'], origin['url'])
             self._objects[key].append(('origin', origin_id))
-        else:
-            origin['id'] = origin_id
 
         return origin_id
 
