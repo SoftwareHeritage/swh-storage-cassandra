@@ -8,6 +8,7 @@ import datetime
 import itertools
 import random
 import unittest
+import uuid
 from collections import defaultdict
 from unittest.mock import Mock, patch
 
@@ -1583,6 +1584,8 @@ class CommonTestStorage(TestStorageData):
             'metadata': None,
             'snapshot': None,
         }
+        import pprint
+        pprint.pprint(list(self.journal_writer.objects))
         self.assertEqual(list(self.journal_writer.objects),
                          [('origin', expected_origin),
                           ('origin', expected_origin2),
@@ -1785,8 +1788,13 @@ class CommonTestStorage(TestStorageData):
 
     def test_origin_visit_get_by_no_result(self):
         # No result
-        actual_origin_visit = self.storage.origin_visit_get_by(
-            10, 999)
+        try:
+            actual_origin_visit = self.storage.origin_visit_get_by(
+                10, 999)
+        except AttributeError:
+            # Cassandra uses UUIDs
+            actual_origin_visit = self.storage.origin_visit_get_by(
+                str(uuid.uuid1()), 999)
 
         self.assertIsNone(actual_origin_visit)
 
