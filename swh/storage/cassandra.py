@@ -16,8 +16,8 @@ from cassandra.policies import RoundRobinPolicy, TokenAwarePolicy
 import dateutil
 
 from swh.model.model import (
-    TimestampWithTimezone, Timestamp, Person, RevisionType,
-    Revision, Directory, DirectoryEntry,
+    TimestampWithTimezone, Timestamp, Person, RevisionType, ObjectType,
+    Revision, Release, Directory, DirectoryEntry,
 )
 from swh.objstorage import get_objstorage
 from swh.objstorage.exc import ObjNotFoundError
@@ -115,6 +115,19 @@ CREATE TABLE IF NOT EXISTS revision (
     metadata                        text
         -- extra metadata as JSON(tarball checksums,
         -- extra commit information, etc...)
+);
+
+CREATE TABLE IF NOT EXISTS release
+(
+    id                              blob PRIMARY KEY,
+    target_type                     ascii,
+    target                          blob,
+    date                            microtimestamp_with_timezone,
+    name                            blob,
+    message                         blob,
+    author                          person,
+    synthetic                       boolean,
+        -- true iff release has been created by Software Heritage
 );
 
 CREATE TABLE IF NOT EXISTS directory (
@@ -228,6 +241,17 @@ def revision_from_db(rev):
     return rev
 
 
+def release_to_db(release):
+    release = Release.from_dict(release)
+    release.target_type = release.target_type.value
+    return release
+
+
+def release_from_db(release):
+    release.target_type = ObjectType(release.target_type)
+    return release
+
+
 def prepared_statement(query):
     def decorator(f):
         @functools.wraps(f)
@@ -326,6 +350,14 @@ class CassandraProxy:
     @prepared_insert_statement('revision', _revision_keys)
     def revision_add_one(self, revision, *, statement):
         self._add_one(statement, revision, self._revision_keys)
+
+    _release_keys = [
+        'id', 'target', 'target_type', 'date', 'name', 'message', 'author',
+        'synthetic']
+
+    @prepared_insert_statement('release', _release_keys)
+    def release_add_one(self, release, *, statement):
+        self._add_one(statement, release, self._release_keys)
 
     _directory_keys = ['id', 'entries_']
     _directory_attributes = ['id', 'entries']
@@ -474,7 +506,7 @@ class CassandraStorage:
             ids
         )
         found_ids = {id_ for (id_,) in res}
-        return set(ids) - found_ids
+        return [id_ for id_ in ids if id_ not in found_ids]
 
     def _content_add(self, contents, with_data):
         if self.journal_writer:
@@ -783,6 +815,40 @@ class CassandraStorage:
         """
         seen = set()
         yield from self._get_parent_revs(revisions, seen, limit, True)
+
+    def release_add(self, releases):
+        if self.journal_writer:
+            self.journal_writer.write_additions('release', releases)
+
+        missing = self.release_missing([rel['id'] for rel in releases])
+
+        for release in releases:
+            release = release_to_db(release)
+
+            if release.id not in missing:
+                continue
+
+            if release:
+                self._proxy.release_add_one(release)
+
+        return {'release:add': len(missing)}
+
+    def release_missing(self, release_ids):
+        return self._missing('release', release_ids)
+
+    def release_get(self, release_ids):
+        rows = self._proxy.execute_and_retry(
+            'SELECT * FROM release WHERE id IN ({})'.format(
+                ', '.join('%s' for _ in release_ids)),
+            release_ids)
+        rels = {}
+        for row in rows:
+            release = Release(**row._asdict())
+            release = release_from_db(release)
+            rels[row.id] = release.to_dict()
+
+        for rel_id in release_ids:
+            yield rels.get(rel_id)
 
     def snapshot_add(self, snapshots, legacy_arg1=None, legacy_arg2=None):
         if legacy_arg1:
