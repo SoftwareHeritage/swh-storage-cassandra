@@ -146,7 +146,11 @@ class TestCassandraStorage(CommonTestStorage, unittest.TestCase):
             'keyspace': self._keyspace,
             'journal_writer': {
                 'cls': 'inmemory',
-            }
+            },
+            'objstorage': {
+                'cls': 'memory',
+                'args': {},
+            },
         })
         self.storage._proxy._session.add_request_init_listener(
             handler.on_request)

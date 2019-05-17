@@ -837,7 +837,7 @@ class CommonTestStorage(TestStorageData):
         self.storage.content_add([cont2])
         test_contents = [cont2]
         missing_per_hash = defaultdict(list)
-        for i in range(256):
+        for i in range(16):
             test_content = missing_cont.copy()
             for hash in algos:
                 test_content[hash] = bytes([i]) + test_content[hash][1:]
@@ -2522,7 +2522,11 @@ class CommonTestStorage(TestStorageData):
     def test_content_find_ctime(self):
         cont = self.cont.copy()
         del cont['data']
+
+        # Cassandra only supports timestamps up to the millisecond
         now = datetime.datetime.now(tz=datetime.timezone.utc)
+        now = now.replace(microsecond=int(now.microsecond/1000)*1000)
+
         cont['ctime'] = now
         self.storage.content_add_metadata([cont])
 

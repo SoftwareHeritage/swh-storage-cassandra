@@ -19,9 +19,14 @@ from swh.model.model import (
     TimestampWithTimezone, Timestamp, Person, RevisionType,
     Revision, Directory, DirectoryEntry,
 )
+from swh.objstorage import get_objstorage
+from swh.objstorage.exc import ObjNotFoundError
 
 from .journal_writer import get_journal_writer
 from . import converters
+
+# Max block size of contents to return
+BULK_BLOCK_CONTENT_LEN_MAX = 10000
 
 
 logger = logging.getLogger(__name__)
@@ -81,6 +86,18 @@ CREATE TYPE IF NOT EXISTS dir_entry (
     name    blob,  -- path name, relative to containing dir
     perms   int,   -- unix-like permissions
     type    ascii
+);
+
+CREATE TABLE IF NOT EXISTS content (
+    sha1          blob,
+    sha1_git      blob,
+    sha256        blob,
+    blake2s256    blob,
+    length        bigint,
+    ctime         timestamp,
+        -- creation time, i.e. time of (first) injection into the storage
+    status        ascii,
+    PRIMARY KEY ((sha1, sha1_git, sha256, blake2s256))
 );
 
 CREATE TABLE IF NOT EXISTS revision (
@@ -143,6 +160,24 @@ CREATE TABLE IF NOT EXISTS origin (
 
 CREATE INDEX origin_by_url ON origin (url);
 '''.split('\n\n')
+
+CONTENT_INDEX_TEMPLATE = '''
+CREATE TABLE IF NOT EXISTS content_by_{main_algo} (
+    sha1          blob,
+    sha1_git      blob,
+    sha256        blob,
+    blake2s256    blob,
+    PRIMARY KEY (({main_algo}), {other_algos})
+);'''
+
+HASH_ALGORITHMS = ['sha1', 'sha1_git', 'sha256', 'blake2s256']
+
+for main_algo in HASH_ALGORITHMS:
+    CREATE_TABLES_QUERIES.append(CONTENT_INDEX_TEMPLATE.format(
+        main_algo=main_algo,
+        other_algos=', '.join(
+            [algo for algo in HASH_ALGORITHMS if algo != main_algo])
+    ))
 
 
 def create_keyspace(hosts, keyspace, port=9042):
@@ -250,6 +285,38 @@ class CassandraProxy:
     def _add_one(self, statement, obj, keys):
         return self.execute_and_retry(
             statement, [getattr(obj, key) for key in keys])
+
+    _content_pk = ['sha1', 'sha1_git', 'sha256', 'blake2s256']
+    _content_keys = [
+        'sha1', 'sha1_git', 'sha256', 'blake2s256', 'length',
+        'ctime', 'status']
+
+    @prepared_insert_statement('content', _content_keys)
+    def content_add_one(self, content, *, statement):
+        return self.execute_and_retry(
+            statement, [content[key] for key in self._content_keys])
+
+    def content_index_add_one(self, main_algo, content):
+        query = 'INSERT INTO content_by_{algo} ({cols}) VALUES ({values})' \
+            .format(algo=main_algo, cols=', '.join(self._content_pk),
+                    values=', '.join('%s' for _ in self._content_pk))
+        self.execute_and_retry(
+            query, [content[algo] for algo in self._content_pk])
+
+    @prepared_statement('SELECT * FROM content WHERE ' +
+                        ' AND '.join(map('%s = ?'.__mod__, HASH_ALGORITHMS)))
+    def content_get_from_pk(self, content, *, statement):
+        rows = list(self.execute_and_retry(
+            statement, [content[algo] for algo in HASH_ALGORITHMS]))
+        assert len(rows) <= 1
+        if rows:
+            return rows[0]
+
+    def content_get_pks_from_single_hash(self, algo, hash_):
+        assert algo in HASH_ALGORITHMS
+        query = 'SELECT * FROM content_by_{algo} WHERE {algo} = %s'.format(
+            algo=algo)
+        return list(self.execute_and_retry(query, [hash_]))
 
     _revision_keys = [
         'id', 'date', 'committer_date', 'type', 'directory', 'message',
@@ -383,8 +450,11 @@ class CassandraProxy:
 
 
 class CassandraStorage:
-    def __init__(self, hosts, keyspace, port=9042, journal_writer=None):
+    def __init__(self, hosts, keyspace, objstorage,
+                 port=9042, journal_writer=None):
         self._proxy = CassandraProxy(hosts, keyspace, port)
+
+        self.objstorage = get_objstorage(**objstorage)
 
         if journal_writer:
             self.journal_writer = get_journal_writer(**journal_writer)
@@ -406,8 +476,144 @@ class CassandraStorage:
         found_ids = {id_ for (id_,) in res}
         return set(ids) - found_ids
 
+    def _content_add(self, contents, with_data):
+        if self.journal_writer:
+            for content in contents:
+                if 'data' in content:
+                    content = content.copy()
+                    del content['data']
+                self.journal_writer.write_addition('content', content)
+
+        count_contents = 0
+        count_content_added = 0
+        count_content_bytes_added = 0
+
+        for content in contents:
+            if self._proxy.content_get_from_pk(content):
+                # We already have it
+                continue
+
+            self._proxy.content_add_one(content)
+            for algo in HASH_ALGORITHMS:
+                self._proxy.content_index_add_one(algo, content)
+
+            # Note that we check for collisions *after* inserting. This
+            # differs significantly from the pgsql storage, but checking
+            # before insertion does not provide any guarantee in case
+            # another thread inserts the colliding hash at the same time.
+            #
+            # The proper way to do it would probably be a BATCH, but this
+            # would be inefficient because of the number of partitions we
+            # need to affect (len(HASH_ALGORITHMS)+1, which is currently 5)
+            for algo in {'sha1', 'sha1_git'}:
+                pks = self._proxy.content_get_pks_from_single_hash(
+                    algo, content[algo])
+                if len(pks) > 1:
+                    # There are more than the one we just inserted.
+                    from . import HashCollision
+                    raise HashCollision(algo, content[algo], pks)
+
+            count_contents += 1
+            if content['status'] == 'visible':
+                count_content_added += 1
+                if with_data:
+                    content_data = content['data']
+                    count_content_bytes_added += len(content_data)
+                    self.objstorage.add(content_data, content['sha1'])
+
+        summary = {
+            'content:add': count_content_added,
+            'skipped_content:add': count_contents - count_content_added,
+        }
+
+        if with_data:
+            summary['content:add:bytes'] = count_content_bytes_added
+
+        return summary
+
+    def content_add(self, contents):
+        contents = [dict(c.items()) for c in contents]  # semi-shallow copy
+        now = datetime.datetime.now(tz=datetime.timezone.utc)
+        for item in contents:
+            item['ctime'] = now
+        return self._content_add(contents, with_data=True)
+
+    def content_add_metadata(self, contents):
+        return self._content_add(contents, with_data=False)
+
+    def content_get(self, ids):
+        if len(ids) > BULK_BLOCK_CONTENT_LEN_MAX:
+            raise ValueError(
+                "Sending at most %s contents." % BULK_BLOCK_CONTENT_LEN_MAX)
+        for obj_id in ids:
+            try:
+                data = self.objstorage.get(obj_id)
+            except ObjNotFoundError:
+                yield None
+                continue
+
+            yield {'sha1': obj_id, 'data': data}
+
+    def content_get_metadata(self, sha1s):
+        for sha1 in sha1s:
+            pks = self._proxy.content_get_pks_from_single_hash('sha1', sha1)
+            if pks:
+                # TODO: what to do if there are more than one?
+                pk = pks[0]
+                res = self._proxy.content_get_from_pk(pk._asdict())
+                # Rows in 'content' are always inserted before corresponding
+                # rows in 'content_by_*', there should always be one.
+                assert res is not None
+                content_metadata = res._asdict()
+                content_metadata.pop('ctime')
+                yield content_metadata
+            else:
+                # FIXME: should really be None
+                yield {
+                    'sha1': sha1,
+                    'sha1_git': None,
+                    'sha256': None,
+                    'blake2s256': None,
+                    'length': None,
+                    'status': None,
+                }
+
     def content_find(self, content):
-        return None
+        filter_algos = list(set(content).intersection(HASH_ALGORITHMS))
+        if not filter_algos:
+            raise ValueError('content keys must contain at least one of: '
+                             '%s' % ', '.join(sorted(HASH_ALGORITHMS)))
+        # Find all contents with one of the hash that matches
+        found_pks = self._proxy.content_get_pks_from_single_hash(
+            filter_algos[0], content[filter_algos[0]])
+        found_pks = [pk._asdict() for pk in found_pks]
+
+        # Filter with the other hashes.
+        for algo in filter_algos[1:]:
+            found_pks = [pk for pk in found_pks if pk[algo] == content[algo]]
+
+        results = []
+        for pk in found_pks:
+            res = self._proxy.content_get_from_pk(pk)
+            # Rows in 'content' are always inserted before corresponding
+            # rows in 'content_by_*', there should always be one.
+            assert res is not None
+            results.append({
+                **res._asdict(),
+                'ctime': res.ctime.replace(tzinfo=datetime.timezone.utc)
+            })
+        return results
+
+    def content_missing(self, contents, key_hash='sha1'):
+        for content in contents:
+            res = self.content_find(content)
+            if not res:
+                yield content[key_hash]
+            if any(c['status'] == 'missing' for c in res):
+                yield content[key_hash]
+
+    def content_missing_per_sha1(self, contents):
+        return self.content_missing([{'sha1': c for c in contents}])
 
     def directory_add(self, directories):
         if self.journal_writer:
