@@ -174,12 +174,29 @@ CREATE TABLE IF NOT EXISTS origin (
 CREATE INDEX origin_by_url ON origin (url);
 
 
-CREATE TABLE object_counts (
+CREATE TABLE IF NOT EXISTS tool_by_uuid (
+    id              timeuuid PRIMARY KEY,
+    name            ascii,
+    version         ascii,
+    configuration   blob,
+);
+
+
+CREATE TABLE IF NOT EXISTS tool (
+    id              timeuuid,
+    name            ascii,
+    version         ascii,
+    configuration   blob,
+    PRIMARY KEY ((name, version, configuration))
+)
+
+
+CREATE TABLE IF NOT EXISTS object_count (
     partition_key   smallint,  -- Constant, must always be 0
     object_type     ascii,
     count           counter,
     PRIMARY KEY ((partition_key), object_type)
-)
+);
 '''.split('\n\n')
 
 CONTENT_INDEX_TEMPLATE = '''
@@ -314,7 +331,7 @@ class CassandraProxy:
                 if nb_retries == self.MAX_RETRIES-1:
                     raise e
 
-    @prepared_statement('UPDATE object_counts SET count = count + ? '
+    @prepared_statement('UPDATE object_count SET count = count + ? '
                         'WHERE partition_key = 0 AND object_type = ?')
     def increment_counter(self, object_type, nb, *, statement):
         self.execute_and_retry(statement, [nb, object_type])
@@ -500,6 +517,29 @@ class CassandraProxy:
             if has_snapshot and has_allowed_status:
                 if self.snapshot_exists(row.snapshot):
                     return row
+
+    _tool_keys = ['id', 'name', 'version', 'configuration']
+
+    @prepared_insert_statement('tool_by_uuid', _tool_keys)
+    def tool_by_uuid_add_one(self, tool, *, statement):
+        self.execute_and_retry(
+            statement, [tool[key] for key in self._tool_keys])
+
+    @prepared_insert_statement('tool', _tool_keys)
+    def tool_add_one(self, tool, *, statement):
+        self.execute_and_retry(
+            statement, [tool[key] for key in self._tool_keys])
+        self.increment_counter('tool', 1)
+
+    @prepared_statement('SELECT id FROM tool '
+                        'WHERE name = ? AND version = ? '
+                        'AND configuration = ?')
+    def tool_get_one_uuid(self, name, version, configuration, *, statement):
+        rows = list(self.execute_and_retry(
+            statement, [name, version, configuration]))
+        if rows:
+            assert len(rows) == 1
+            return rows[0].id
 
 
 class CassandraStorage:
@@ -1193,9 +1233,37 @@ class CassandraStorage:
         except IndexError:
             return None
 
+    def tool_add(self, tools):
+        inserted = []
+        for tool in tools:
+            tool = tool.copy()
+            tool_json = tool.copy()
+            tool_json['configuration'] = json.dumps(
+                tool['configuration'], sort_keys=True).encode()
+            id_ = self._proxy.tool_get_one_uuid(**tool_json)
+            if not id_:
+                id_ = uuid.uuid1()
+                tool_json['id'] = id_
+                self._proxy.tool_by_uuid_add_one(tool_json)
+                self._proxy.tool_add_one(tool_json)
+            tool['id'] = id_
+            inserted.append(tool)
+        return inserted
+
+    def tool_get(self, tool):
+        id_ = self._proxy.tool_get_one_uuid(
+            tool['name'], tool['version'],
+            json.dumps(tool['configuration'], sort_keys=True).encode())
+        if id_:
+            tool = tool.copy()
+            tool['id'] = id_
+            return tool
+        else:
+            return None
+
     def stat_counters(self):
         rows = self._proxy.execute_and_retry(
-            'SELECT object_type, count FROM object_counts '
+            'SELECT object_type, count FROM object_count '
             'WHERE partition_key=0', [])
         keys = (
             'content', 'directory', 'origin', 'origin_visit',

@@ -80,7 +80,7 @@ def cassandra_cluster(tmpdir_factory):
             native_transport_port=native_transport_port,
         ))
     with open(str(cassandra_conf.join('jvm.options')), 'w') as fd:
-        fd.write('-Xmn=1M -Xms=10M -XMx=100M\n')  # some sane values
+        fd.write('-Xmn=1M -Xms=20M -XMx=200M\n')  # some sane values
 
     if os.environ.get('LOG_CASSANDRA'):
         stdout = stderr = subprocess.PIPE
@@ -96,8 +96,8 @@ def cassandra_cluster(tmpdir_factory):
         start_new_session=True,
         env={
             'CASSANDRA_CONF': str(cassandra_conf.join('jvm.options')),
-            'MAX_HEAP_SIZE': '100M',
-            'HEAP_NEWSIZE': '10M',
+            'MAX_HEAP_SIZE': '200M',
+            'HEAP_NEWSIZE': '20M',
         },
         stdout=stdout,
         stderr=stderr,
