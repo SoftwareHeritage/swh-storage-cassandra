@@ -2766,7 +2766,6 @@ class CommonTestStorage(TestStorageData):
         expected[self.cont['sha1_git']] = [{
             'sha1_git': self.cont['sha1_git'],
             'type': 'content',
-            'id': self.cont['sha1'],
         }]
 
         self.storage.directory_add([self.dir])
@@ -2774,7 +2773,6 @@ class CommonTestStorage(TestStorageData):
         expected[self.dir['id']] = [{
             'sha1_git': self.dir['id'],
             'type': 'directory',
-            'id': self.dir['id'],
         }]
 
         self.storage.revision_add([self.revision])
@@ -2782,7 +2780,6 @@ class CommonTestStorage(TestStorageData):
         expected[self.revision['id']] = [{
             'sha1_git': self.revision['id'],
             'type': 'revision',
-            'id': self.revision['id'],
         }]
 
         self.storage.release_add([self.release])
@@ -2790,13 +2787,9 @@ class CommonTestStorage(TestStorageData):
         expected[self.release['id']] = [{
             'sha1_git': self.release['id'],
             'type': 'release',
-            'id': self.release['id'],
         }]
 
         ret = self.storage.object_find_by_sha1_git(sha1_gits)
-        for val in ret.values():
-            for obj in val:
-                del obj['object_id']
 
         self.assertEqual(expected, ret)
 

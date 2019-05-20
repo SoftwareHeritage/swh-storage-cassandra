@@ -535,7 +535,7 @@ class Db(BaseDb):
             )
             """, ((id,) for id in releases))
 
-    object_find_by_sha1_git_cols = ['sha1_git', 'type', 'id', 'object_id']
+    object_find_by_sha1_git_cols = ['sha1_git', 'type']
 
     def object_find_by_sha1_git(self, ids, cur=None):
         cur = self._cursor(cur)
@@ -546,37 +546,29 @@ class Db(BaseDb):
             known_objects as ((
                 select
                   id as sha1_git,
-                  'release'::object_type as type,
-                  id,
-                  object_id
+                  'release'::object_type as type
                 from release r
                 where exists (select 1 from t where t.id = r.id)
             ) union all (
                 select
                   id as sha1_git,
-                  'revision'::object_type as type,
-                  id,
-                  object_id
+                  'revision'::object_type as type
                 from revision r
                 where exists (select 1 from t where t.id = r.id)
             ) union all (
                 select
                   id as sha1_git,
-                  'directory'::object_type as type,
-                  id,
-                  object_id
+                  'directory'::object_type as type
                 from directory d
                 where exists (select 1 from t where t.id = d.id)
             ) union all (
                 select
                   sha1_git as sha1_git,
-                  'content'::object_type as type,
-                  sha1 as id,
-                  object_id
+                  'content'::object_type as type
                 from content c
                 where exists (select 1 from t where t.id = c.sha1_git)
             ))
-            select t.id as sha1_git, k.type, k.id, k.object_id
+            select t.id as sha1_git, k.type
             from t
             left join known_objects k on t.id = k.sha1_git
             """,

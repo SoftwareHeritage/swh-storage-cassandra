@@ -920,8 +920,6 @@ class Storage:
             ret[id_] = [{
                     'sha1_git': id_,
                     'type': obj[0],
-                    'id': obj[1],
-                    'object_id': id_,
                     } for obj in objs]
         return ret
 
