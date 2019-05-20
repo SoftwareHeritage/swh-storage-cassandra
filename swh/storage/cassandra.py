@@ -172,6 +172,14 @@ CREATE TABLE IF NOT EXISTS origin (
 
 
 CREATE INDEX origin_by_url ON origin (url);
+
+
+CREATE TABLE object_counts (
+    partition_key   smallint,  -- Constant, must always be 0
+    object_type     ascii,
+    count           counter,
+    PRIMARY KEY ((partition_key), object_type)
+)
 '''.split('\n\n')
 
 CONTENT_INDEX_TEMPLATE = '''
@@ -306,7 +314,13 @@ class CassandraProxy:
                 if nb_retries == self.MAX_RETRIES-1:
                     raise e
 
-    def _add_one(self, statement, obj, keys):
+    @prepared_statement('UPDATE object_counts SET count = count + ? '
+                        'WHERE partition_key = 0 AND object_type = ?')
+    def increment_counter(self, object_type, nb, *, statement):
+        self.execute_and_retry(statement, [nb, object_type])
+
+    def _add_one(self, statement, object_type, obj, keys):
+        self.increment_counter(object_type, 1)
         return self.execute_and_retry(
             statement, [getattr(obj, key) for key in keys])
 
@@ -317,8 +331,9 @@ class CassandraProxy:
 
     @prepared_insert_statement('content', _content_keys)
     def content_add_one(self, content, *, statement):
-        return self.execute_and_retry(
+        self.execute_and_retry(
             statement, [content[key] for key in self._content_keys])
+        self.increment_counter('content', 1)
 
     def content_index_add_one(self, main_algo, content):
         query = 'INSERT INTO content_by_{algo} ({cols}) VALUES ({values})' \
@@ -349,7 +364,7 @@ class CassandraProxy:
 
     @prepared_insert_statement('revision', _revision_keys)
     def revision_add_one(self, revision, *, statement):
-        self._add_one(statement, revision, self._revision_keys)
+        self._add_one(statement, 'revision', revision, self._revision_keys)
 
     _release_keys = [
         'id', 'target', 'target_type', 'date', 'name', 'message', 'author',
@@ -357,14 +372,15 @@ class CassandraProxy:
 
     @prepared_insert_statement('release', _release_keys)
     def release_add_one(self, release, *, statement):
-        self._add_one(statement, release, self._release_keys)
+        self._add_one(statement, 'release', release, self._release_keys)
 
     _directory_keys = ['id', 'entries_']
     _directory_attributes = ['id', 'entries']
 
     @prepared_insert_statement('directory', _directory_keys)
     def directory_add_one(self, directory, *, statement):
-        self._add_one(statement, directory, self._directory_attributes)
+        self._add_one(
+            statement, 'directory', directory, self._directory_attributes)
 
     _snapshot_keys = ['id']
 
@@ -374,7 +390,8 @@ class CassandraProxy:
 
     @prepared_insert_statement('snapshot', _snapshot_keys)
     def snapshot_add_one(self, snapshot_id, *, statement):
-        return self.execute_and_retry(statement, [snapshot_id])
+        self.execute_and_retry(statement, [snapshot_id])
+        self.increment_counter('snapshot', 1)
 
     _snapshot_branch_keys = ['snapshot_id', 'name', 'target_type', 'target']
 
@@ -401,6 +418,7 @@ class CassandraProxy:
         id_ = uuid.uuid1()
         self.execute_and_retry(
             statement, [id_, origin['type'], origin['url']])
+        self.increment_counter('origin', 1)
         return id_
 
     @prepared_statement('SELECT * FROM origin WHERE id = ?')
@@ -444,8 +462,9 @@ class CassandraProxy:
 
     @prepared_insert_statement('origin_visit', _origin_visit_keys)
     def origin_visit_add_one(self, visit, *, statement):
-        return self.execute_and_retry(
+        self.execute_and_retry(
             statement, [visit[key] for key in self._origin_visit_keys])
+        self.increment_counter('origin_visit', 1)
 
     @prepared_statement(
         'UPDATE origin_visit SET ' +
@@ -456,6 +475,8 @@ class CassandraProxy:
             statement,
             [visit[key] for key in self._origin_visit_update_keys]
             + [uuid.UUID(visit['origin']), visit['visit']])
+        # TODO: check if there is already one
+        self.increment_counter('origin_visit', 1)
 
     @prepared_statement('SELECT * FROM origin_visit '
                         'WHERE origin = ? AND visit = ?')
@@ -525,9 +546,10 @@ class CassandraStorage:
                 # We already have it
                 continue
 
-            self._proxy.content_add_one(content)
             for algo in HASH_ALGORITHMS:
                 self._proxy.content_index_add_one(algo, content)
+
+            self._proxy.content_add_one(content)
 
             # Note that we check for collisions *after* inserting. This
             # differs significantly from the pgsql storage, but checking
@@ -1170,3 +1192,17 @@ class CassandraStorage:
                 self._proxy.origin_visit_get_one(origin, visit))
         except IndexError:
             return None
+
+    def stat_counters(self):
+        rows = self._proxy.execute_and_retry(
+            'SELECT object_type, count FROM object_counts '
+            'WHERE partition_key=0', [])
+        keys = (
+            'content', 'directory', 'origin', 'origin_visit',
+            'release', 'revision', 'skipped_content', 'snapshot')
+        stats = {key: 0 for key in keys}
+        stats.update({row.object_type: row.count for row in rows})
+        return stats
+
+    def refresh_stat_counters(self):
+        pass

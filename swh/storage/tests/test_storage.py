@@ -2476,7 +2476,7 @@ class CommonTestStorage(TestStorageData):
 
     def test_stat_counters(self):
         expected_keys = ['content', 'directory',
-                         'origin', 'person', 'revision']
+                         'origin', 'revision']
 
         # Initially, all counters are 0
 
@@ -2517,7 +2517,9 @@ class CommonTestStorage(TestStorageData):
         self.assertEqual(counters['snapshot'], 1)
         self.assertEqual(counters['origin'], 1)
         self.assertEqual(counters['revision'], 1)
-        self.assertEqual(counters['person'], 2)
+        if 'person' in counters:
+            # Not supported by the Cassandra backend
+            self.assertEqual(counters['person'], 2)
 
     def test_content_find_ctime(self):
         cont = self.cont.copy()
