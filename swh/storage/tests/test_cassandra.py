@@ -125,16 +125,8 @@ class RequestHandler:
             print(rf.message.query)
 
 
-@pytest.mark.usefixtures('class_cassandra_cluster')
-class TestCassandraStorage(CommonTestStorage, unittest.TestCase):
-    """Test the Cassandra storage API
-
-    This class doesn't define any tests as we want identical
-    functionality between local and remote storage. All the tests are
-    therefore defined in CommonTestStorage.
-    """
-    def setUp(self):
-        super().setUp()
+class BaseCassandraTest:
+    def setup_cassandra(self):
         (hosts, port) = self.cassandra_cluster
         self._keyspace = os.urandom(10).hex()
 
@@ -156,9 +148,26 @@ class TestCassandraStorage(CommonTestStorage, unittest.TestCase):
             handler.on_request)
         self.journal_writer = self.storage.journal_writer
 
-    def tearDown(self):
+    def teardown_cassandra(self):
         self.storage._proxy._session.execute(
             'DROP KEYSPACE "%s"' % self._keyspace)
+
+
+@pytest.mark.usefixtures('class_cassandra_cluster')
+class TestCassandraStorage(CommonTestStorage, BaseCassandraTest,
+                           unittest.TestCase):
+    """Test the Cassandra storage API
+
+    This class doesn't define any tests as we want identical
+    functionality between local and remote storage. All the tests are
+    therefore defined in CommonTestStorage.
+    """
+    def setUp(self):
+        super().setUp()
+        self.setup_cassandra()
+
+    def tearDown(self):
+        self.teardown_cassandra()
         super().tearDown()
 
     @pytest.mark.skip('postgresql-specific test')
@@ -214,15 +223,30 @@ class TestCassandraStorage(CommonTestStorage, unittest.TestCase):
     def test_origin_search(self):
         pass
 
+    @pytest.mark.skip('Not supported by Cassandra')
+    def test_origin_count(self):
+        pass
 
-@pytest.mark.xfail
+
+@pytest.mark.skip('too slow')
 @pytest.mark.property_based
-class PropTestCassandraStorage(CommonPropTestStorage, unittest.TestCase):
+@pytest.mark.usefixtures('class_cassandra_cluster')
+class PropTestCassandraStorage(CommonPropTestStorage, BaseCassandraTest,
+                               unittest.TestCase):
     """Test the Cassandra storage API
 
     This class doesn't define any tests as we want identical
     functionality between local and remote storage. All the tests are
     therefore defined in CommonPropTestStorage.
     """
+    def setUp(self):
+        super().setUp()
+        self.setup_cassandra()
+
+    def tearDown(self):
+        self.teardown_cassandra()
+        super().tearDown()
+
     def reset_storage_tables(self):
-        assert False
+        self.teardown_cassandra()
+        self.setup_cassandra()

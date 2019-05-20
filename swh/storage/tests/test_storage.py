@@ -3100,6 +3100,72 @@ class CommonTestStorage(TestStorageData):
         self.assertEqual(len(m_by_provider), 1)
         self.assertEqual(m_by_provider, expected_results)
 
+    def test_origin_get_invalid_id_legacy(self):
+        try:
+            invalid_origin_id = 1
+            origin_info = self.storage.origin_get({'id': invalid_origin_id})
+        except AttributeError:
+            # Cassandra uses UUIDs
+            invalid_origin_id = str(uuid.uuid1())
+            origin_info = self.storage.origin_get({'id': invalid_origin_id})
+        self.assertIsNone(origin_info)
+
+        origin_visits = list(self.storage.origin_visit_get(
+            invalid_origin_id))
+        self.assertEqual(origin_visits, [])
+
+    def test_origin_get_invalid_id(self):
+        try:
+            (id1, id2) = (1, 2)
+            origin_info = self.storage.origin_get([{'id': id1}, {'id': id2}])
+        except AttributeError:
+            # Cassandra uses UUIDs
+            (id1, id2) = (str(uuid.uuid1()), str(uuid.uuid1()))
+            origin_info = self.storage.origin_get([{'id': id1}, {'id': id2}])
+
+        self.assertEqual(origin_info, [None, None])
+
+        origin_visits = list(self.storage.origin_visit_get(id1))
+        self.assertEqual(origin_visits, [])
+
+    def test_origin_count(self):
+
+        new_origins = [
+            {
+                'type': 'git',
+                'url': 'https://github.com/user1/repo1'
+            },
+            {
+                'type': 'git',
+                'url': 'https://github.com/user2/repo1'
+            },
+            {
+                'type': 'git',
+                'url': 'https://github.com/user3/repo1'
+            },
+            {
+                'type': 'git',
+                'url': 'https://gitlab.com/user1/repo1'
+            },
+            {
+                'type': 'git',
+                'url': 'https://gitlab.com/user2/repo1'
+            }
+        ]
+
+        self.storage.origin_add(new_origins)
+
+        self.assertEqual(self.storage.origin_count('github'), 3)
+        self.assertEqual(self.storage.origin_count('gitlab'), 2)
+        self.assertEqual(
+            self.storage.origin_count('.*user.*', regexp=True), 5)
+        self.assertEqual(
+            self.storage.origin_count('.*user.*', regexp=False), 0)
+        self.assertEqual(
+            self.storage.origin_count('.*user1.*', regexp=True), 2)
+        self.assertEqual(
+            self.storage.origin_count('.*user1.*', regexp=False), 0)
+
 
 class CommonPropTestStorage:
     def assert_contents_ok(self, expected_contents, actual_contents,
@@ -3223,23 +3289,6 @@ class CommonPropTestStorage:
 
                                 keys_to_check)
 
-    def test_origin_get_invalid_id_legacy(self):
-        invalid_origin_id = 1
-
-        origin_info = self.storage.origin_get({'id': invalid_origin_id})
-        self.assertIsNone(origin_info)
-
-        origin_visits = list(self.storage.origin_visit_get(
-            invalid_origin_id))
-        self.assertEqual(origin_visits, [])
-
-    def test_origin_get_invalid_id(self):
-        origin_info = self.storage.origin_get([{'id': 1}, {'id': 2}])
-        self.assertEqual(origin_info, [None, None])
-
-        origin_visits = list(self.storage.origin_visit_get(1))
-        self.assertEqual(origin_visits, [])
-
     @given(strategies.sets(origins().map(lambda x: tuple(x.to_dict().items())),
                            min_size=6, max_size=15))
     def test_origin_get_range(self, new_origins):
@@ -3275,44 +3324,6 @@ class CommonPropTestStorage:
             self.storage.origin_get_range(origin_from=origin_from,
                                           origin_count=origin_count))
         self.assertEqual(len(origins), 0)
-
-    def test_origin_count(self):
-
-        new_origins = [
-            {
-                'type': 'git',
-                'url': 'https://github.com/user1/repo1'
-            },
-            {
-                'type': 'git',
-                'url': 'https://github.com/user2/repo1'
-            },
-            {
-                'type': 'git',
-                'url': 'https://github.com/user3/repo1'
-            },
-            {
-                'type': 'git',
-                'url': 'https://gitlab.com/user1/repo1'
-            },
-            {
-                'type': 'git',
-                'url': 'https://gitlab.com/user2/repo1'
-            }
-        ]
-
-        self.storage.origin_add(new_origins)
-
-        self.assertEqual(self.storage.origin_count('github'), 3)
-        self.assertEqual(self.storage.origin_count('gitlab'), 2)
-        self.assertEqual(
-            self.storage.origin_count('.*user.*', regexp=True), 5)
-        self.assertEqual(
-            self.storage.origin_count('.*user.*', regexp=False), 0)
-        self.assertEqual(
-            self.storage.origin_count('.*user1.*', regexp=True), 2)
-        self.assertEqual(
-            self.storage.origin_count('.*user1.*', regexp=False), 0)
 
     @given(strategies.lists(objects(), max_size=2))
     def test_add_arbitrary(self, objects):
