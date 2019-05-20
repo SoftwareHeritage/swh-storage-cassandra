@@ -1019,6 +1019,39 @@ class CassandraStorage:
             'next_branch': last_branch,
         }
 
+    OBJECT_FIND_TYPES = ('revision', 'release', 'content', 'directory')
+    # Mind the order, revision is the most likely one for a given ID,
+    # so we check revisions first.
+
+    def object_find_by_sha1_git(self, ids):
+        results = {id_: [] for id_ in ids}
+        missing_ids = set(ids)
+
+        for object_type in self.OBJECT_FIND_TYPES:
+            table = object_type
+            col = 'id'
+            if object_type == 'content':
+                table = 'content_by_sha1_git'
+                col = 'sha1_git'
+            rows = self._proxy.execute_and_retry(
+                'SELECT {col} AS id FROM {table} WHERE {col} IN ({values})'
+                .format(
+                    table=table, col=col,
+                    values=', '.join('%s' for _ in missing_ids)),
+                missing_ids)
+            for row in rows:
+                results[row.id].append({
+                    'sha1_git': row.id,
+                    'type': object_type,
+                })
+                missing_ids.remove(row.id)
+
+            if not missing_ids:
+                # We found everything, skipping the next queries.
+                break
+
+        return results
+
     def origin_get(self, origins):
         if isinstance(origins, dict):
             # Old API

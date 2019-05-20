@@ -190,6 +190,30 @@ class TestCassandraStorage(CommonTestStorage, unittest.TestCase):
     def test_person_get(self):
         pass
 
+    @pytest.mark.skip('Not yet implemented')
+    def test_metadata_provider_get(self):
+        pass
+
+    @pytest.mark.skip('Not yet implemented')
+    def test_metadata_provider_get_by(self):
+        pass
+
+    @pytest.mark.skip('Not yet implemented')
+    def test_origin_metadata_add(self):
+        pass
+
+    @pytest.mark.skip('Not yet implemented')
+    def test_origin_metadata_get(self):
+        pass
+
+    @pytest.mark.skip('Not yet implemented')
+    def test_origin_metadata_get_by_provider_type(self):
+        pass
+
+    @pytest.mark.skip('Not supported by Cassandra')
+    def test_origin_search(self):
+        pass
+
 
 @pytest.mark.xfail
 @pytest.mark.property_based
