@@ -171,7 +171,7 @@ CREATE TABLE IF NOT EXISTS origin (
 );
 
 
-CREATE INDEX origin_by_url ON origin (url);
+CREATE INDEX IF NOT EXISTS origin_by_url ON origin (url);
 
 
 CREATE TABLE IF NOT EXISTS tool_by_uuid (
