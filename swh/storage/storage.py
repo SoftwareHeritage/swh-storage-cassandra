@@ -24,6 +24,7 @@ from .algos import diff
 from .journal_writer import get_journal_writer
 
 from swh.model.hashutil import ALGORITHMS, hash_to_bytes
+from swh.model.identifiers import origin_identifier
 from swh.objstorage import get_objstorage
 from swh.objstorage.exc import ObjNotFoundError
 
@@ -923,7 +924,7 @@ class Storage():
                 raise TypeError(
                     'snapshot_add expects one argument (or, as a legacy '
                     'behavior, three arguments), not two')
-            if isinstance(snapshots, int):
+            if isinstance(snapshots, (int, bytes)):
                 # Called by legacy code that uses the new api/client.py
                 (origin_id, visit_id, snapshots) = \
                     (snapshots, origin, [visit])
@@ -1531,7 +1532,9 @@ class Storage():
         if self.journal_writer:
             self.journal_writer.write_addition('origin', origin)
 
-        return db.origin_add(origin['type'], origin['url'], cur)
+        origin_id = origin_identifier(origin)
+
+        return db.origin_add(origin_id, origin['type'], origin['url'], cur)
 
     @db_transaction()
     def fetch_history_start(self, origin_id, db=None, cur=None):
@@ -1693,7 +1696,8 @@ class Storage():
 
         idx = db.tool_get(tool['name'],
                           tool['version'],
-                          tool_conf)
+                          tool_conf,
+                          cur=cur)
         if not idx:
             return None
         return dict(zip(db.tool_cols, idx))

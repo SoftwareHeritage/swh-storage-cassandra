@@ -15,7 +15,7 @@ import random
 import warnings
 
 from swh.model.hashutil import DEFAULT_ALGORITHMS
-from swh.model.identifiers import normalize_timestamp
+from swh.model.identifiers import normalize_timestamp, origin_identifier
 from swh.objstorage import get_objstorage
 from swh.objstorage.exc import ObjNotFoundError
 
@@ -38,8 +38,8 @@ class Storage:
         self._revisions = {}
         self._releases = {}
         self._snapshots = {}
-        self._origins = []
-        self._origin_visits = []
+        self._origins = {}
+        self._origin_visits = {}
         self._persons = []
         self._origin_metadata = defaultdict(list)
         self._tools = {}
@@ -773,10 +773,10 @@ class Storage:
                   branches.
 
         """
-        if origin > len(self._origins) or \
-           visit > len(self._origin_visits[origin-1]):
+        if origin not in self._origins or \
+           visit > len(self._origin_visits[origin]):
             return None
-        snapshot_id = self._origin_visits[origin-1][visit-1]['snapshot']
+        snapshot_id = self._origin_visits[origin][visit-1]['snapshot']
         if snapshot_id:
             return self.snapshot_get(snapshot_id)
         else:
@@ -810,7 +810,7 @@ class Storage:
                   or :const:`None` if the snapshot has less than 1000
                   branches.
         """
-        visits = self._origin_visits[origin-1]
+        visits = self._origin_visits[origin]
         if allowed_statuses is not None:
             visits = [visit for visit in visits
                       if visit['status'] in allowed_statuses]
@@ -980,8 +980,8 @@ class Storage:
                     'Origin must have either id or (type and url).')
             origin = None
             # self._origin_id can return None
-            if origin_id is not None and origin_id <= len(self._origins):
-                origin = copy.deepcopy(self._origins[origin_id-1])
+            if origin_id is not None and origin_id in self._origins:
+                origin = copy.deepcopy(self._origins[origin_id])
                 origin['id'] = origin_id
             results.append(origin)
 
@@ -991,7 +991,7 @@ class Storage:
         else:
             return results
 
-    def origin_get_range(self, origin_from=1, origin_count=100):
+    def origin_get_range(self, origin_from=b'\x00'*20, origin_count=100):
         """Retrieve ``origin_count`` origins whose ids are greater
         or equal than ``origin_from``.
 
@@ -1005,13 +1005,14 @@ class Storage:
             dicts containing origin information as returned
             by :meth:`swh.storage.in_memory.Storage.origin_get`.
         """
-        origin_from = max(origin_from, 1)
-        if origin_from <= len(self._origins):
-            max_idx = origin_from + origin_count - 1
-            if max_idx > len(self._origins):
-                max_idx = len(self._origins)
-            for idx in range(origin_from-1, max_idx):
-                yield copy.deepcopy(self._origins[idx])
+        nb = 0
+        for (idx, origin) in sorted(self._origins.items()):
+            if idx < origin_from:
+                continue
+            yield origin
+            nb += 1
+            if nb == origin_count:
+                break
 
     def origin_search(self, url_pattern, offset=0, limit=50,
                       regexp=False, with_visit=False, db=None, cur=None):
@@ -1032,7 +1033,7 @@ class Storage:
             An iterable of dict containing origin information as returned
             by :meth:`swh.storage.storage.Storage.origin_get`.
         """
-        origins = self._origins
+        origins = self._origins.values()
         if regexp:
             pat = re.compile(url_pattern)
             origins = [orig for orig in origins if pat.search(orig['url'])]
@@ -1040,7 +1041,7 @@ class Storage:
             origins = [orig for orig in origins if url_pattern in orig['url']]
         if with_visit:
             origins = [orig for orig in origins
-                       if len(self._origin_visits[orig['id']-1]) > 0]
+                       if len(self._origin_visits[orig['id']]) > 0]
 
         origins = copy.deepcopy(origins[offset:offset+limit])
         return origins
@@ -1105,11 +1106,9 @@ class Storage:
         if origin_id is None:
             if self.journal_writer:
                 self.journal_writer.write_addition('origin', origin)
-            # origin ids are in the range [1, +inf[
-            origin_id = len(self._origins) + 1
-            origin['id'] = origin_id
-            self._origins.append(origin)
-            self._origin_visits.append([])
+            origin['id'] = origin_id = origin_identifier(origin)
+            self._origins[origin_id] = origin
+            self._origin_visits[origin_id] = []
             key = (origin['type'], origin['url'])
             self._objects[key].append(('origin', origin_id))
 
@@ -1163,9 +1162,9 @@ class Storage:
             date = dateutil.parser.parse(date)
 
         visit_ret = None
-        if origin_id <= len(self._origin_visits):
+        if origin_id in self._origin_visits:
             # visit ids are in the range [1, +inf[
-            visit_id = len(self._origin_visits[origin_id-1]) + 1
+            visit_id = len(self._origin_visits[origin_id]) + 1
             visit = {
                 'origin': origin_id,
                 'date': date,
@@ -1181,7 +1180,7 @@ class Storage:
                 self.journal_writer.write_addition('origin_visit', {
                     **visit, 'origin': origin})
 
-            self._origin_visits[origin_id-1].append(visit)
+            self._origin_visits[origin_id].append(visit)
             visit_ret = {
                 'origin': origin_id,
                 'visit': visit_id,
@@ -1208,7 +1207,7 @@ class Storage:
         origin_id = origin  # TODO: rename the argument
 
         try:
-            visit = self._origin_visits[origin_id-1][visit_id-1]
+            visit = self._origin_visits[origin_id][visit_id-1]
         except IndexError:
             raise ValueError('Invalid origin_id or visit_id') from None
         if self.journal_writer:
@@ -1220,8 +1219,8 @@ class Storage:
                 'date': visit['date'],
                 'metadata': metadata or visit['metadata'],
                 'snapshot': snapshot or visit['snapshot']})
-        if origin_id > len(self._origin_visits) or \
-           visit_id > len(self._origin_visits[origin_id-1]):
+        if origin_id not in self._origin_visits or \
+           visit_id > len(self._origin_visits[origin_id]):
             return
         if status:
             visit['status'] = status
@@ -1279,8 +1278,8 @@ class Storage:
             List of visits.
 
         """
-        if origin <= len(self._origin_visits):
-            visits = self._origin_visits[origin-1]
+        if origin in self._origin_visits:
+            visits = self._origin_visits[origin]
             if last_visit is not None:
                 visits = visits[last_visit:]
             if limit is not None:
@@ -1289,7 +1288,7 @@ class Storage:
                 if not visit:
                     continue
                 visit_id = visit['visit']
-                yield copy.deepcopy(self._origin_visits[origin-1][visit_id-1])
+                yield copy.deepcopy(self._origin_visits[origin][visit_id-1])
 
     def origin_visit_get_by(self, origin, visit):
         """Retrieve origin visit's information.
@@ -1303,9 +1302,9 @@ class Storage:
 
         """
         origin_visit = None
-        if origin <= len(self._origin_visits) and \
-           visit <= len(self._origin_visits[origin-1]):
-            origin_visit = self._origin_visits[origin-1][visit-1]
+        if origin in self._origin_visits and \
+           visit <= len(self._origin_visits[origin]):
+            origin_visit = self._origin_visits[origin][visit-1]
         return copy.deepcopy(origin_visit)
 
     def person_get(self, person):
@@ -1507,7 +1506,7 @@ class Storage:
 
     def _origin_id(self, origin):
         origin_id = None
-        for stored_origin in self._origins:
+        for stored_origin in self._origins.values():
             if stored_origin['type'] == origin['type'] and \
                stored_origin['url'] == origin['url']:
                 origin_id = stored_origin['id']

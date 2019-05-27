@@ -626,12 +626,12 @@ class Db(BaseDb):
         cur.execute(query, [jsonize(fetch_history.get(col)) for col in
                             self.fetch_history_cols + ['id']])
 
-    def origin_add(self, type, url, cur=None):
+    def origin_add(self, id_, type_, url, cur=None):
         """Insert a new origin and return the new identifier."""
-        insert = """INSERT INTO origin (type, url) values (%s, %s)
+        insert = """INSERT INTO origin (id, type, url) values (%s, %s, %s)
                     RETURNING id"""
 
-        cur.execute(insert, (type, url))
+        cur.execute(insert, (id_, type_, url))
         return cur.fetchone()[0]
 
     origin_cols = ['id', 'type', 'url']

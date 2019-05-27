@@ -60,7 +60,7 @@ create table content
 -- retrieve all the contained software.
 create table origin
 (
-  id       bigserial not null,
+  id       bytea not null,
   type     text, -- TODO use an enum here (?)
   url      text not null
 );
@@ -83,7 +83,7 @@ create table skipped_content
   ctime      timestamptz not null default now(),
   status     content_status not null default 'absent',
   reason     text not null,
-  origin     bigint,
+  origin     bytea,
   object_id  bigserial
 );
 
@@ -93,7 +93,7 @@ create table skipped_content
 create table fetch_history
 (
   id        bigserial,
-  origin    bigint,
+  origin    bytea,
   date      timestamptz not null,
   status    boolean,  -- true if and only if the fetch has been successful
   result    jsonb,     -- more detailed returned values, times, etc...
@@ -206,7 +206,7 @@ create table revision_history
 -- snapshot object capturing the full-state of the origin at visit time.
 create table origin_visit
 (
-  origin       bigint not null,
+  origin       bytea not null,
   visit        bigint not null,
   date         timestamptz not null,
   status       origin_visit_status not null,
@@ -309,7 +309,7 @@ comment on column metadata_provider.metadata is 'Other metadata about provider';
 create table origin_metadata
 (
   id             bigserial     not null,  -- PK internal object identifier
-  origin_id      bigint        not null,  -- references origin(id)
+  origin_id      bytea         not null,  -- references origin(id)
   discovery_date timestamptz   not null,  -- when it was extracted
   provider_id    bigint        not null,  -- ex: 'hal', 'lister-github', 'loader-github'
   tool_id        bigint        not null,

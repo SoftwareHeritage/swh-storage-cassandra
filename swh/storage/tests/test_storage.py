@@ -8,7 +8,6 @@ import datetime
 import itertools
 import random
 import unittest
-import uuid
 from collections import defaultdict
 from unittest.mock import Mock, patch
 
@@ -1405,21 +1404,16 @@ class CommonTestStorage(TestStorageData):
         found_origins = list(self.storage.origin_search('.*/.*', regexp=True))
         self.assertEqual(len(found_origins), 2)
 
-        found_origins = list(self.storage.origin_search('/', offset=0, limit=1)) # noqa
-        self.assertEqual(len(found_origins), 1)
-        self.assertEqual(found_origins[0], origin_data)
+        found_origins0 = list(self.storage.origin_search('.*/.*', offset=0, limit=1, regexp=True)) # noqa
+        self.assertEqual(len(found_origins0), 1)
+        self.assertIn(found_origins0[0], [origin_data, origin2_data])
 
-        found_origins = list(self.storage.origin_search('.*/.*', offset=0, limit=1, regexp=True)) # noqa
-        self.assertEqual(len(found_origins), 1)
-        self.assertEqual(found_origins[0], origin_data)
+        found_origins1 = list(self.storage.origin_search('.*/.*', offset=1, limit=1, regexp=True)) # noqa
+        self.assertEqual(len(found_origins1), 1)
+        self.assertIn(found_origins1[0], [origin_data, origin2_data])
 
-        found_origins = list(self.storage.origin_search('/', offset=1, limit=1)) # noqa
-        self.assertEqual(len(found_origins), 1)
-        self.assertEqual(found_origins[0], origin2_data)
-
-        found_origins = list(self.storage.origin_search('.*/.*', offset=1, limit=1, regexp=True)) # noqa
-        self.assertEqual(len(found_origins), 1)
-        self.assertEqual(found_origins[0], origin2_data)
+        self.assertCountEqual(found_origins0 + found_origins1,
+                              [origin_data, origin2_data])
 
     def test_origin_visit_add(self):
         # given
@@ -1788,13 +1782,9 @@ class CommonTestStorage(TestStorageData):
 
     def test_origin_visit_get_by_no_result(self):
         # No result
-        try:
-            actual_origin_visit = self.storage.origin_visit_get_by(
-                10, 999)
-        except AttributeError:
-            # Cassandra uses UUIDs
-            actual_origin_visit = self.storage.origin_visit_get_by(
-                str(uuid.uuid1()), 999)
+        origin_id = b'\x0a'
+        actual_origin_visit = self.storage.origin_visit_get_by(
+            origin_id, 999)
 
         self.assertIsNone(actual_origin_visit)
 
@@ -2293,15 +2283,9 @@ class CommonTestStorage(TestStorageData):
         by_id = self.storage.snapshot_get(bogus_snapshot_id)
         self.assertIsNone(by_id)
 
-        try:
-            bogus_origin_id = 1
-            by_ov = self.storage.snapshot_get_by_origin_visit(
-                    bogus_origin_id, bogus_visit_id)
-        except AttributeError:
-            # Cassandra uses UUIDs
-            bogus_origin_id = str(uuid.uuid1())
-            by_ov = self.storage.snapshot_get_by_origin_visit(
-                    bogus_origin_id, bogus_visit_id)
+        bogus_origin_id = '\x01'
+        by_ov = self.storage.snapshot_get_by_origin_visit(
+                bogus_origin_id, bogus_visit_id)
 
         self.assertIsNone(by_ov)
 
@@ -3101,13 +3085,8 @@ class CommonTestStorage(TestStorageData):
         self.assertEqual(m_by_provider, expected_results)
 
     def test_origin_get_invalid_id_legacy(self):
-        try:
-            invalid_origin_id = 1
-            origin_info = self.storage.origin_get({'id': invalid_origin_id})
-        except AttributeError:
-            # Cassandra uses UUIDs
-            invalid_origin_id = str(uuid.uuid1())
-            origin_info = self.storage.origin_get({'id': invalid_origin_id})
+        invalid_origin_id = b'\x01'
+        origin_info = self.storage.origin_get({'id': invalid_origin_id})
         self.assertIsNone(origin_info)
 
         origin_visits = list(self.storage.origin_visit_get(
@@ -3115,13 +3094,8 @@ class CommonTestStorage(TestStorageData):
         self.assertEqual(origin_visits, [])
 
     def test_origin_get_invalid_id(self):
-        try:
-            (id1, id2) = (1, 2)
-            origin_info = self.storage.origin_get([{'id': id1}, {'id': id2}])
-        except AttributeError:
-            # Cassandra uses UUIDs
-            (id1, id2) = (str(uuid.uuid1()), str(uuid.uuid1()))
-            origin_info = self.storage.origin_get([{'id': id1}, {'id': id2}])
+        (id1, id2) = (b'\x01', b'\x02')
+        origin_info = self.storage.origin_get([{'id': id1}, {'id': id2}])
 
         self.assertEqual(origin_info, [None, None])
 
@@ -3290,8 +3264,9 @@ class CommonPropTestStorage:
                                 keys_to_check)
 
     @given(strategies.sets(origins().map(lambda x: tuple(x.to_dict().items())),
-                           min_size=6, max_size=15))
-    def test_origin_get_range(self, new_origins):
+                           min_size=6, max_size=15),
+           strategies.binary(min_size=20, max_size=20))
+    def test_origin_get_range(self, new_origins, origin_from):
         self.reset_storage_tables()
         new_origins = list(map(dict, new_origins))
 
@@ -3299,8 +3274,7 @@ class CommonPropTestStorage:
 
         self.storage.origin_add(new_origins)
 
-        origin_from = random.randint(1, nb_origins-1)
-        origin_count = random.randint(1, nb_origins - origin_from)
+        origin_count = random.randint(1, nb_origins)
 
         actual_origins = list(
             self.storage.origin_get_range(origin_from=origin_from,
@@ -3312,14 +3286,14 @@ class CommonPropTestStorage:
         for origin in actual_origins:
             self.assertIn(origin, new_origins)
 
-        origin_from = -1
+        origin_from = b'\x00'*20
         origin_count = 5
         origins = list(
             self.storage.origin_get_range(origin_from=origin_from,
                                           origin_count=origin_count))
-        self.assertEqual(len(origins), origin_count)
+        self.assertTrue(len(origins) <= origin_count)
 
-        origin_from = 10000
+        origin_from = b'\xff'*20
         origins = list(
             self.storage.origin_get_range(origin_from=origin_from,
                                           origin_count=origin_count))

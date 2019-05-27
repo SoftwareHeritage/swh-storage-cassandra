@@ -693,7 +693,7 @@ $$;
 -- add a new origin_visit for origin origin_id at date.
 --
 -- Returns the new visit id.
-create or replace function swh_origin_visit_add(origin_id bigint, date timestamptz)
+create or replace function swh_origin_visit_add(origin_id bytea, date timestamptz)
     returns bigint
     language sql
 as $$
@@ -829,7 +829,7 @@ as $$
 $$;
 
 -- Find the visit of origin id closest to date visit_date
-create or replace function swh_visit_find_by_date(origin bigint, visit_date timestamptz default NOW())
+create or replace function swh_visit_find_by_date(origin bytea, visit_date timestamptz default NOW())
     returns origin_visit
     language sql
     stable
@@ -852,7 +852,7 @@ as $$
 $$;
 
 -- Find the visit of origin id closest to date visit_date
-create or replace function swh_visit_get(origin bigint)
+create or replace function swh_visit_get(origin bytea)
     returns origin_visit
     language sql
     stable
@@ -926,7 +926,7 @@ $$;
 -- origin_metadata functions
 create type origin_metadata_signature as (
     id bigint,
-    origin_id bigint,
+    origin_id bytea,
     discovery_date timestamptz,
     tool_id bigint,
     metadata jsonb,
@@ -936,7 +936,7 @@ create type origin_metadata_signature as (
     provider_url  text
 );
 create or replace function swh_origin_metadata_get_by_origin(
-       origin integer)
+       origin bytea)
     returns setof origin_metadata_signature
     language sql
     stable
@@ -950,7 +950,7 @@ as $$
 $$;
 
 create or replace function swh_origin_metadata_get_by_provider_type(
-       origin integer,
+       origin bytea,
        type text)
     returns setof origin_metadata_signature
     language sql

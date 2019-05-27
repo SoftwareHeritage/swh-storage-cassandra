@@ -19,6 +19,7 @@ from swh.model.model import (
     TimestampWithTimezone, Timestamp, Person, RevisionType, ObjectType,
     Revision, Release, Directory, DirectoryEntry,
 )
+from swh.model.identifiers import origin_identifier
 from swh.objstorage import get_objstorage
 from swh.objstorage.exc import ObjNotFoundError
 
@@ -150,7 +151,7 @@ CREATE TABLE IF NOT EXISTS snapshot_branch (
 );
 
 CREATE TABLE IF NOT EXISTS origin_visit (
-    origin          timeuuid,
+    origin          blob,
     visit           bigint,
     date            timestamp,
     status          ascii,
@@ -161,7 +162,8 @@ CREATE TABLE IF NOT EXISTS origin_visit (
 
 
 CREATE TABLE IF NOT EXISTS origin (
-    id              timeuuid PRIMARY KEY,
+    id              blob PRIMARY KEY,
+        -- sha1(type + "\x00" + url)
     type            ascii,
     url             text,
     next_visit_id   int,
@@ -432,11 +434,9 @@ class CassandraProxy:
     @prepared_statement('INSERT INTO origin (id, type, url, next_visit_id) '
                         'VALUES (?, ?, ?, 1) IF NOT EXISTS')
     def origin_add_one(self, origin, *, statement):
-        id_ = uuid.uuid1()
         self.execute_and_retry(
-            statement, [id_, origin['type'], origin['url']])
+            statement, [origin['id'], origin['type'], origin['url']])
         self.increment_counter('origin', 1)
-        return id_
 
     @prepared_statement('SELECT * FROM origin WHERE id = ?')
     def origin_get_by_id(self, id_, *, statement):
@@ -456,7 +456,6 @@ class CassandraProxy:
     @prepared_statement('UPDATE origin SET next_visit_id=? '
                         'WHERE id = ? IF next_visit_id=?')
     def origin_generate_unique_visit_id(self, origin_id, *, statement):
-        origin_id = uuid.UUID(origin_id)
         next_id = self._origin_get_next_visit_id(origin_id)
         while True:
             res = list(self.execute_and_retry(
@@ -491,7 +490,7 @@ class CassandraProxy:
         self.execute_and_retry(
             statement,
             [visit[key] for key in self._origin_visit_update_keys]
-            + [uuid.UUID(visit['origin']), visit['visit']])
+            + [visit['origin'], visit['visit']])
         # TODO: check if there is already one
         self.increment_counter('origin_visit', 1)
 
@@ -500,13 +499,13 @@ class CassandraProxy:
     def origin_visit_get_one(self, origin_id, visit_id, *, statement):
         # TODO: error handling
         return self.execute_and_retry(
-            statement, [uuid.UUID(origin_id), visit_id])[0]
+            statement, [origin_id, visit_id])[0]
 
     @prepared_statement('SELECT * FROM origin_visit WHERE origin = ?')
     def origin_visit_get_latest_with_snap(
             self, origin, allowed_statuses, *, statement):
         # TODO: do the ordering and filtering in Cassandra
-        rows = list(self.execute_and_retry(statement, [uuid.UUID(origin)]))
+        rows = list(self.execute_and_retry(statement, [origin]))
 
         rows.sort(key=lambda row: (row.date, row.visit), reverse=True)
 
@@ -1082,7 +1081,7 @@ class CassandraStorage:
 
     def origin_get_one(self, origin):
         if 'id' in origin:
-            rows = self._proxy.origin_get_by_id(uuid.UUID(origin['id']))
+            rows = self._proxy.origin_get_by_id(origin['id'])
         elif 'type' in origin and 'url' in origin:
             rows = self._proxy.origin_get_by_type_and_url(
                 origin['type'], origin['url'])
@@ -1095,7 +1094,7 @@ class CassandraStorage:
             assert len(rows) == 1
             result = rows[0]._asdict()
             return {
-                'id': str(result['id']),
+                'id': result['id'],
                 'url': result['url'],
                 'type': result['type'],
             }
@@ -1108,7 +1107,7 @@ class CassandraStorage:
         results = []
         for origin in origins:
             origin = origin.copy()
-            origin['id'] = str(self.origin_add_one(origin))
+            origin['id'] = self.origin_add_one(origin)
             results.append(origin)
         return results
 
@@ -1123,7 +1122,9 @@ class CassandraStorage:
             if self.journal_writer:
                 self.journal_writer.write_addition('origin', origin)
 
-            origin_id = str(self._proxy.origin_add_one(origin))
+            origin = origin.copy()
+            origin['id'] = origin_id = origin_identifier(origin)
+            self._proxy.origin_add_one(origin)
 
         return origin_id
 
@@ -1151,7 +1152,7 @@ class CassandraStorage:
         visit_id = self._proxy.origin_generate_unique_visit_id(origin_id)
 
         visit = {
-            'origin': uuid.UUID(origin_id),
+            'origin': origin_id,
             'date': date,
             'status': 'ongoing',
             'snapshot': None,
@@ -1210,7 +1211,7 @@ class CassandraStorage:
         query = ('UPDATE origin_visit SET ' + ', '.join(set_parts) +
                  ' WHERE origin = %s AND visit = %s')
         self._proxy.execute_and_retry(
-            query, args + [uuid.UUID(origin_id), visit_id])
+            query, args + [origin_id, visit_id])
 
     def origin_visit_upsert(self, visits):
         if self.journal_writer:
@@ -1232,7 +1233,7 @@ class CassandraStorage:
     def _format_origin_visit_row(visit):
         return {
             **visit._asdict(),
-            'origin': str(visit.origin),
+            'origin': visit.origin,
             'date': visit.date.replace(tzinfo=datetime.timezone.utc),
             'metadata': (json.loads(visit.metadata)
                          if visit.metadata else None),
@@ -1240,7 +1241,7 @@ class CassandraStorage:
 
     def origin_visit_get(self, origin, last_visit=None, limit=None):
         query_parts = ['SELECT * FROM origin_visit WHERE', 'origin=%s']
-        args = [uuid.UUID(origin)]
+        args = [origin]
 
         if last_visit:
             query_parts.append('AND visit > %s')
