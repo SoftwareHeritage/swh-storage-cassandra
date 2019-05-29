@@ -7,6 +7,7 @@ import datetime
 import functools
 import json
 import logging
+import re
 import uuid
 import warnings
 
@@ -1100,6 +1101,28 @@ class CassandraStorage:
             }
         else:
             return None
+
+    def origin_search(self, url_pattern, offset=0, limit=50,
+                      regexp=False, with_visit=False):
+        # TODO: do some filtering on the Cassandra side
+        origins = self._proxy.execute_and_retry('SELECT * FROM origin', [])
+        if regexp:
+            pat = re.compile(url_pattern)
+            origins = [orig for orig in origins if pat.search(orig.url)]
+        else:
+            origins = [orig for orig in origins if url_pattern in orig.url]
+
+        if with_visit:
+            origins = [orig for orig in origins
+                       if orig.next_visit_id > 1]
+
+        return [
+            {
+                'id': orig.id,
+                'url': orig.url,
+                'type': orig.type,
+            }
+            for orig in origins[offset:offset+limit]]
 
     def origin_add(self, origins):
         if any('id' in origin for origin in origins):
