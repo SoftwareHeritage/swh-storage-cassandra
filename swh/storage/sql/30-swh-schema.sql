@@ -61,7 +61,6 @@ create table content
 create table origin
 (
   id       bytea not null,
-  type     text, -- TODO use an enum here (?)
   url      text not null
 );
 

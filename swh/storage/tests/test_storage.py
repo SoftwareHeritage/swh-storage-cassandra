@@ -350,12 +350,10 @@ class TestStorageData:
 
         self.origin = {
             'url': 'file:///dev/null',
-            'type': 'git',
         }
 
         self.origin2 = {
             'url': 'file:///dev/zero',
-            'type': 'git',
         }
 
         self.provider = {
@@ -1251,8 +1249,7 @@ class CommonTestStorage(TestStorageData):
 
         id = self.storage.origin_add_one(self.origin)
 
-        actual_origin = self.storage.origin_get({'url': self.origin['url'],
-                                                 'type': self.origin['type']})
+        actual_origin = self.storage.origin_get({'url': self.origin['url']})
         self.assertEqual(actual_origin['id'], id)
 
         id2 = self.storage.origin_add_one(self.origin)
@@ -1267,13 +1264,11 @@ class CommonTestStorage(TestStorageData):
 
         actual_origin = self.storage.origin_get([{
             'url': self.origin['url'],
-            'type': self.origin['type'],
         }])[0]
         self.assertEqual(actual_origin['id'], origin1['id'])
 
         actual_origin2 = self.storage.origin_get([{
             'url': self.origin2['url'],
-            'type': self.origin2['type'],
         }])[0]
         self.assertEqual(actual_origin2['id'], origin2['id'])
 
@@ -1296,14 +1291,13 @@ class CommonTestStorage(TestStorageData):
 
         # lookup per type and url (returns id)
         actual_origin0 = self.storage.origin_get(
-            {'url': self.origin['url'], 'type': self.origin['type']})
+            {'url': self.origin['url']})
         self.assertEqual(actual_origin0['id'], id)
 
         # lookup per id (returns dict)
         actual_origin1 = self.storage.origin_get({'id': id})
 
         self.assertEqual(actual_origin1, {'id': id,
-                                          'type': self.origin['type'],
                                           'url': self.origin['url']})
 
     def test_origin_get(self):
@@ -1312,7 +1306,7 @@ class CommonTestStorage(TestStorageData):
 
         # lookup per type and url (returns id)
         actual_origin0 = self.storage.origin_get(
-            [{'url': self.origin['url'], 'type': self.origin['type']}])
+            [{'url': self.origin['url']}])
         self.assertEqual(len(actual_origin0), 1, actual_origin0)
         self.assertEqual(actual_origin0[0]['id'], origin_id)
 
@@ -1321,7 +1315,6 @@ class CommonTestStorage(TestStorageData):
 
         self.assertEqual(len(actual_origin1), 1, actual_origin1)
         self.assertEqual(actual_origin1[0], {'id': origin_id,
-                                             'type': self.origin['type'],
                                              'url': self.origin['url']})
 
     def test_origin_get_consistency(self):
@@ -1330,7 +1323,7 @@ class CommonTestStorage(TestStorageData):
 
         with self.assertRaises(ValueError):
             self.storage.origin_get([
-                {'url': self.origin['url'], 'type': self.origin['type']},
+                {'url': self.origin['url']},
                 {'id': id}])
 
     def test_origin_search(self):
@@ -1343,7 +1336,6 @@ class CommonTestStorage(TestStorageData):
 
         id = self.storage.origin_add_one(self.origin)
         origin_data = {'id': id,
-                       'type': self.origin['type'],
                        'url': self.origin['url']}
         found_origins = list(self.storage.origin_search(self.origin['url']))
         self.assertEqual(len(found_origins), 1)
@@ -1356,7 +1348,6 @@ class CommonTestStorage(TestStorageData):
 
         id2 = self.storage.origin_add_one(self.origin2)
         origin2_data = {'id': id2,
-                        'type': self.origin2['type'],
                         'url': self.origin2['url']}
         found_origins = list(self.storage.origin_search(self.origin2['url']))
         self.assertEqual(len(found_origins), 1)
@@ -3106,23 +3097,18 @@ class CommonTestStorage(TestStorageData):
 
         new_origins = [
             {
-                'type': 'git',
                 'url': 'https://github.com/user1/repo1'
             },
             {
-                'type': 'git',
                 'url': 'https://github.com/user2/repo1'
             },
             {
-                'type': 'git',
                 'url': 'https://github.com/user3/repo1'
             },
             {
-                'type': 'git',
                 'url': 'https://gitlab.com/user1/repo1'
             },
             {
-                'type': 'git',
                 'url': 'https://gitlab.com/user2/repo1'
             }
         ]
@@ -3281,6 +3267,8 @@ class CommonPropTestStorage:
                                           origin_count=origin_count))
 
         for origin in actual_origins:
+            del origin['id']
+        for origin in new_origins:
             del origin['id']
 
         for origin in actual_origins:

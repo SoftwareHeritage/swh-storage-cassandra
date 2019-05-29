@@ -14,7 +14,7 @@ alter table content add primary key using index content_pkey;
 create unique index concurrently origin_pkey on origin(id);
 alter table origin add primary key using index origin_pkey;
 
-create index concurrently on origin(type, url);
+create index concurrently on origin(url);
 
 
 -- skipped_content

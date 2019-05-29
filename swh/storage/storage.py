@@ -1340,7 +1340,7 @@ class Storage():
 
         return ret
 
-    origin_keys = ['id', 'type', 'url']
+    origin_keys = ['id', 'url']
 
     @db_transaction(statement_timeout=500)
     def origin_get(self, origins, db=None, cur=None):
@@ -1350,9 +1350,8 @@ class Storage():
         Args:
             origin: a list of dictionaries representing the individual
                 origins to find.
-                These dicts have either the keys type and url:
+                These dicts have either the key url:
 
-                - type (FIXME: enum TBD): the origin type ('git', 'wget', ...)
                 - url (bytes): the url the origin points to
 
                 or the id:
@@ -1363,7 +1362,6 @@ class Storage():
             dict: the origin dictionary with the keys:
 
             - id: origin's id
-            - type: origin's type
             - url: origin's url
 
         Raises:
@@ -1380,19 +1378,18 @@ class Storage():
             return_single = False
 
         origin_ids = [origin.get('id') for origin in origins]
-        origin_types_and_urls = [(origin.get('type'), origin.get('url'))
-                                 for origin in origins]
+        origin_urls = [origin.get('url') for origin in origins]
         if any(origin_ids):
-            # Lookup per ID
+            # Lookup by ID
             if all(origin_ids):
                 results = db.origin_get(origin_ids, cur)
             else:
                 raise ValueError(
                     'Either all origins or none at all should have an "id".')
-        elif any(type_ and url for (type_, url) in origin_types_and_urls):
-            # Lookup per type + URL
-            if all(type_ and url for (type_, url) in origin_types_and_urls):
-                results = db.origin_get_with(origin_types_and_urls, cur)
+        elif any(origin_urls):
+            # Lookup by URL
+            if all(origin_urls):
+                results = db.origin_get_with(origin_urls, cur)
             else:
                 raise ValueError(
                     'Either all origins or none at all should have a '
@@ -1493,9 +1490,8 @@ class Storage():
 
         Args:
             origins: list of dictionaries representing the individual origins,
-                with the following keys:
+                with the following key:
 
-                - type: the origin type ('git', 'svn', 'deb', ...)
                 - url (bytes): the url the origin points to
 
         Returns:
@@ -1516,7 +1512,6 @@ class Storage():
             origin: dictionary representing the individual origin to add. This
                 dict has the following keys:
 
-                - type (FIXME: enum TBD): the origin type ('git', 'wget', ...)
                 - url (bytes): the url the origin points to
 
         Returns:
@@ -1525,16 +1520,16 @@ class Storage():
 
         """
         origin_id = list(db.origin_get_with(
-            [(origin['type'], origin['url'])], cur))[0][0]
+            [(origin['url'],)], cur))[0][0]
         if origin_id:
             return origin_id
 
         if self.journal_writer:
             self.journal_writer.write_addition('origin', origin)
 
-        origin_id = origin_identifier(origin)
+        origin_id = hash_to_bytes(origin_identifier(origin))
 
-        return db.origin_add(origin_id, origin['type'], origin['url'], cur)
+        return db.origin_add(origin_id, origin['url'], cur)
 
     @db_transaction()
     def fetch_history_start(self, origin_id, db=None, cur=None):

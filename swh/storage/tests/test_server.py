@@ -75,7 +75,8 @@ def test_load_and_check_config_remote_config_local_type_raise(tmpdir):
 
     assert (
         e.value.args[0] ==
-        "The storage backend can only be started with a 'local' configuration"
+        "The storage backend can only be started with a 'local' "
+        "or 'cassandra' configuration"
     )
 
 

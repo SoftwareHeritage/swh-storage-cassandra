@@ -27,8 +27,8 @@ create function notify_new_origin()
 as $$
   begin
     perform pg_notify('new_origin', json_build_object(
-      'url', new.url::text,
-      'type', new.type::text
+      'id', encode(new.id, 'hex'),
+      'url', new.url::text
     )::text);
     return null;
   end;

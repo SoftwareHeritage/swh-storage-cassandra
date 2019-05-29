@@ -626,27 +626,26 @@ class Db(BaseDb):
         cur.execute(query, [jsonize(fetch_history.get(col)) for col in
                             self.fetch_history_cols + ['id']])
 
-    def origin_add(self, id_, type_, url, cur=None):
+    def origin_add(self, id_, url, cur=None):
         """Insert a new origin and return the new identifier."""
-        insert = """INSERT INTO origin (id, type, url) values (%s, %s, %s)
+        insert = """INSERT INTO origin (id, url) values (%s, %s)
                     RETURNING id"""
 
-        cur.execute(insert, (id_, type_, url))
+        cur.execute(insert, (id_, url))
         return cur.fetchone()[0]
 
-    origin_cols = ['id', 'type', 'url']
+    origin_cols = ['id', 'url']
 
     def origin_get_with(self, origins, cur=None):
-        """Retrieve the origin id from its type and url if found."""
+        """Retrieve the origin id from its url if found."""
         cur = self._cursor(cur)
 
-        query = """SELECT %s FROM (VALUES %%s) as t(type, url)
-                   LEFT JOIN origin
-                       ON (t.type=origin.type AND t.url=origin.url)
+        query = """SELECT %s FROM (VALUES %%s) as t(url)
+                   LEFT JOIN origin ON t.url=origin.url
                 """ % ','.join('origin.' + col for col in self.origin_cols)
 
         yield from execute_values_generator(
-            cur, query, origins)
+            cur, query, ((url,) for url in origins))
 
     def origin_get(self, ids, cur=None):
         """Retrieve the origin per its identifier.

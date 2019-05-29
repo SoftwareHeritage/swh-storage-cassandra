@@ -16,11 +16,12 @@ from cassandra.cluster import Cluster
 from cassandra.policies import RoundRobinPolicy, TokenAwarePolicy
 import dateutil
 
+from swh.model.identifiers import origin_identifier
 from swh.model.model import (
     TimestampWithTimezone, Timestamp, Person, RevisionType, ObjectType,
     Revision, Release, Directory, DirectoryEntry,
 )
-from swh.model.identifiers import origin_identifier
+from swh.model.hashutil import hash_to_bytes
 from swh.objstorage import get_objstorage
 from swh.objstorage.exc import ObjNotFoundError
 
@@ -164,8 +165,7 @@ CREATE TABLE IF NOT EXISTS origin_visit (
 
 CREATE TABLE IF NOT EXISTS origin (
     id              blob PRIMARY KEY,
-        -- sha1(type + "\x00" + url)
-    type            ascii,
+        -- sha1(url)
     url             text,
     next_visit_id   int,
         -- We need integer visit ids for compatibility with the pgsql
@@ -432,21 +432,20 @@ class CassandraProxy:
     def snapshot_branch_get(self, snapshot_id, from_, limit, *, statement):
         return self.execute_and_retry(statement, [snapshot_id, from_, limit])
 
-    @prepared_statement('INSERT INTO origin (id, type, url, next_visit_id) '
-                        'VALUES (?, ?, ?, 1) IF NOT EXISTS')
+    @prepared_statement('INSERT INTO origin (id, url, next_visit_id) '
+                        'VALUES (?, ?, 1) IF NOT EXISTS')
     def origin_add_one(self, origin, *, statement):
         self.execute_and_retry(
-            statement, [origin['id'], origin['type'], origin['url']])
+            statement, [origin['id'], origin['url']])
         self.increment_counter('origin', 1)
 
     @prepared_statement('SELECT * FROM origin WHERE id = ?')
     def origin_get_by_id(self, id_, *, statement):
         return self.execute_and_retry(statement, [id_])
 
-    @prepared_statement('SELECT * FROM origin WHERE url = ? AND type = ? '
-                        'ALLOW FILTERING')
-    def origin_get_by_type_and_url(self, type_, url, *, statement):
-        return self.execute_and_retry(statement, [url, type_])
+    @prepared_statement('SELECT * FROM origin WHERE url = ?')
+    def origin_get_by_url(self, url, *, statement):
+        return self.execute_and_retry(statement, [url])
 
     @prepared_statement('SELECT next_visit_id FROM origin WHERE id = ?')
     def _origin_get_next_visit_id(self, origin_id, *, statement):
@@ -738,6 +737,7 @@ class CassandraStorage:
         if ret['type'] == 'file':
             content = self.content_find({'sha1_git': ret['target']})
             if content:
+                content = content[0]
                 for key in keys:
                     ret[key] = content[key]
         return ret
@@ -1089,12 +1089,11 @@ class CassandraStorage:
     def origin_get_one(self, origin):
         if 'id' in origin:
             rows = self._proxy.origin_get_by_id(origin['id'])
-        elif 'type' in origin and 'url' in origin:
-            rows = self._proxy.origin_get_by_type_and_url(
-                origin['type'], origin['url'])
+        elif 'url' in origin:
+            rows = self._proxy.origin_get_by_url(origin['url'])
         else:
             raise ValueError(
-                'Origin must have either id or (type and url).')
+                'Origin must have either id or an url.')
 
         rows = list(rows)
         if rows:
@@ -1103,7 +1102,6 @@ class CassandraStorage:
             return {
                 'id': result['id'],
                 'url': result['url'],
-                'type': result['type'],
             }
         else:
             return None
@@ -1126,7 +1124,6 @@ class CassandraStorage:
             {
                 'id': orig.id,
                 'url': orig.url,
-                'type': orig.type,
             }
             for orig in origins[offset:offset+limit]]
 
@@ -1141,8 +1138,6 @@ class CassandraStorage:
         return results
 
     def origin_add_one(self, origin):
-        assert 'id' not in origin
-
         known_origin = self.origin_get_one(origin)
 
         if known_origin:
@@ -1152,7 +1147,7 @@ class CassandraStorage:
                 self.journal_writer.write_addition('origin', origin)
 
             origin = origin.copy()
-            origin['id'] = origin_id = origin_identifier(origin)
+            origin['id'] = origin_id = hash_to_bytes(origin_identifier(origin))
             self._proxy.origin_add_one(origin)
 
         return origin_id

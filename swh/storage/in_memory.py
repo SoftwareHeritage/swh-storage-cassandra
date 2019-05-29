@@ -14,7 +14,7 @@ import itertools
 import random
 import warnings
 
-from swh.model.hashutil import DEFAULT_ALGORITHMS
+from swh.model.hashutil import DEFAULT_ALGORITHMS, hash_to_bytes
 from swh.model.identifiers import normalize_timestamp, origin_identifier
 from swh.objstorage import get_objstorage
 from swh.objstorage.exc import ObjNotFoundError
@@ -932,7 +932,6 @@ class Storage:
                 origins to find.
                 These dicts have either the keys type and url:
 
-                - type (FIXME: enum TBD): the origin type ('git', 'wget', ...)
                 - url (bytes): the url the origin points to
 
                 or the id:
@@ -943,7 +942,6 @@ class Storage:
             dict: the origin dictionary with the keys:
 
             - id: origin's id
-            - type: origin's type
             - url: origin's url
 
         Raises:
@@ -973,7 +971,7 @@ class Storage:
         for origin in origins:
             if 'id' in origin:
                 origin_id = origin['id']
-            elif 'type' in origin and 'url' in origin:
+            elif 'url' in origin:
                 origin_id = self._origin_id(origin)
             else:
                 raise ValueError(
@@ -1073,7 +1071,6 @@ class Storage:
             origins: list of dictionaries representing the individual origins,
                 with the following keys:
 
-                - type: the origin type ('git', 'svn', 'deb', ...)
                 - url (bytes): the url the origin points to
 
         Returns:
@@ -1092,7 +1089,6 @@ class Storage:
             origin: dictionary representing the individual origin to add. This
                 dict has the following keys:
 
-                - type (FIXME: enum TBD): the origin type ('git', 'wget', ...)
                 - url (bytes): the url the origin points to
 
         Returns:
@@ -1101,16 +1097,14 @@ class Storage:
 
         """
         origin = copy.deepcopy(origin)
-        assert 'id' not in origin
         origin_id = self._origin_id(origin)
         if origin_id is None:
             if self.journal_writer:
                 self.journal_writer.write_addition('origin', origin)
-            origin['id'] = origin_id = origin_identifier(origin)
+            origin['id'] = origin_id = hash_to_bytes(origin_identifier(origin))
             self._origins[origin_id] = origin
             self._origin_visits[origin_id] = []
-            key = (origin['type'], origin['url'])
-            self._objects[key].append(('origin', origin_id))
+            self._objects[origin_id].append(('origin', origin_id))
 
         return origin_id
 
@@ -1507,8 +1501,7 @@ class Storage:
     def _origin_id(self, origin):
         origin_id = None
         for stored_origin in self._origins.values():
-            if stored_origin['type'] == origin['type'] and \
-               stored_origin['url'] == origin['url']:
+            if stored_origin['url'] == origin['url']:
                 origin_id = stored_origin['id']
                 break
         return origin_id
