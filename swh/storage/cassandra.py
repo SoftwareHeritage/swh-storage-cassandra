@@ -625,21 +625,21 @@ class CassandraStorage:
 
         return summary
 
-    def content_add(self, contents):
-        contents = [dict(c.items()) for c in contents]  # semi-shallow copy
+    def content_add(self, content):
+        content = [dict(c.items()) for c in content]  # semi-shallow copy
         now = datetime.datetime.now(tz=datetime.timezone.utc)
-        for item in contents:
+        for item in content:
             item['ctime'] = now
-        return self._content_add(contents, with_data=True)
+        return self._content_add(content, with_data=True)
 
-    def content_add_metadata(self, contents):
-        return self._content_add(contents, with_data=False)
+    def content_add_metadata(self, content):
+        return self._content_add(content, with_data=False)
 
-    def content_get(self, ids):
-        if len(ids) > BULK_BLOCK_CONTENT_LEN_MAX:
+    def content_get(self, content):
+        if len(content) > BULK_BLOCK_CONTENT_LEN_MAX:
             raise ValueError(
                 "Sending at most %s contents." % BULK_BLOCK_CONTENT_LEN_MAX)
-        for obj_id in ids:
+        for obj_id in content:
             try:
                 data = self.objstorage.get(obj_id)
             except ObjNotFoundError:
@@ -648,8 +648,8 @@ class CassandraStorage:
 
             yield {'sha1': obj_id, 'data': data}
 
-    def content_get_metadata(self, sha1s):
-        for sha1 in sha1s:
+    def content_get_metadata(self, content):
+        for sha1 in content:
             pks = self._proxy.content_get_pks_from_single_hash('sha1', sha1)
             if pks:
                 # TODO: what to do if there are more than one?
@@ -698,13 +698,13 @@ class CassandraStorage:
             })
         return results
 
-    def content_missing(self, contents, key_hash='sha1'):
-        for content in contents:
-            res = self.content_find(content)
+    def content_missing(self, content, key_hash='sha1'):
+        for cont in content:
+            res = self.content_find(cont)
             if not res:
-                yield content[key_hash]
+                yield cont[key_hash]
             if any(c['status'] == 'missing' for c in res):
-                yield content[key_hash]
+                yield cont[key_hash]
 
     def content_missing_per_sha1(self, contents):
         return self.content_missing([{'sha1': c for c in contents}])
@@ -722,8 +722,8 @@ class CassandraStorage:
 
         return {'directory:add': len(missing)}
 
-    def directory_missing(self, directory_ids):
-        return self._missing('directory', directory_ids)
+    def directory_missing(self, directories):
+        return self._missing('directory', directories)
 
     def _join_dentry_to_content(self, dentry):
         keys = (
@@ -787,8 +787,8 @@ class CassandraStorage:
         return self.directory_entry_get_by_path(
                 first_item['target'], paths[1:])
 
-    def directory_ls(self, directory_id, recursive=False):
-        yield from self._directory_ls(directory_id, recursive)
+    def directory_ls(self, directory, recursive=False):
+        yield from self._directory_ls(directory, recursive)
 
     def revision_add(self, revisions, check_missing=True):
         if self.journal_writer:
@@ -811,21 +811,21 @@ class CassandraStorage:
         else:
             return {'revision:add': len(revisions)}
 
-    def revision_missing(self, revision_ids):
-        return self._missing('revision', revision_ids)
+    def revision_missing(self, revisions):
+        return self._missing('revision', revisions)
 
-    def revision_get(self, revision_ids):
+    def revision_get(self, revisions):
         rows = self._proxy.execute_and_retry(
             'SELECT * FROM revision WHERE id IN ({})'.format(
-                ', '.join('%s' for _ in revision_ids)),
-            revision_ids)
+                ', '.join('%s' for _ in revisions)),
+            revisions)
         revs = {}
         for row in rows:
             rev = Revision(**row._asdict())
             rev = revision_from_db(rev)
             revs[rev.id] = rev.to_dict()
 
-        for rev_id in revision_ids:
+        for rev_id in revisions:
             yield revs.get(rev_id)
 
     def _get_parent_revs(self, rev_ids, seen, limit, short):
@@ -850,7 +850,7 @@ class CassandraStorage:
                 yield rev.to_dict()
             yield from self._get_parent_revs(parents, seen, limit, short)
 
-    def revision_log(self, revision_ids, limit=None):
+    def revision_log(self, revisions, limit=None):
         """Fetch revision entry from the given root revisions.
 
         Args:
@@ -862,7 +862,7 @@ class CassandraStorage:
 
         """
         seen = set()
-        yield from self._get_parent_revs(revision_ids, seen, limit, False)
+        yield from self._get_parent_revs(revisions, seen, limit, False)
 
     def revision_shortlog(self, revisions, limit=None):
         """Fetch the shortlog for the given revisions
@@ -895,8 +895,8 @@ class CassandraStorage:
 
         return {'release:add': len(missing)}
 
-    def release_missing(self, release_ids):
-        return self._missing('release', release_ids)
+    def release_missing(self, releases):
+        return self._missing('release', releases)
 
     def release_get(self, release_ids):
         rows = self._proxy.execute_and_retry(
@@ -912,13 +912,21 @@ class CassandraStorage:
         for rel_id in release_ids:
             yield rels.get(rel_id)
 
-    def snapshot_add(self, snapshots, legacy_arg1=None, legacy_arg2=None):
-        if legacy_arg1:
-            assert legacy_arg2
-            (origin, visit, snapshots) = \
-                (snapshots, legacy_arg1, [legacy_arg2])
-        else:
-            origin = visit = None
+    def snapshot_add(self, snapshots, origin=None, visit=None):
+        if origin:
+            if not visit:
+                raise TypeError(
+                    'snapshot_add expects one argument (or, as a legacy '
+                    'behavior, three arguments), not two')
+            if isinstance(snapshots, (int, bytes)):
+                # Called by legacy code that uses the new api/client.py
+                (origin_id, visit_id, snapshots) = \
+                    (snapshots, origin, [visit])
+            else:
+                # Called by legacy code that uses the old api/client.py
+                origin_id = origin
+                visit_id = visit
+                snapshots = [snapshots]
 
         count = 0
         for snapshot in snapshots:
@@ -945,10 +953,10 @@ class CassandraStorage:
             # with half the branches.
             self._proxy.snapshot_add_one(snapshot['id'])
 
-        if origin:
+        if origin_id:
             # Legacy API, there can be only one snapshot
             self.origin_visit_update(
-                origin, visit, snapshot=snapshots[0]['id'])
+                origin_id, visit_id, snapshot=snapshots[0]['id'])
 
         return {'snapshot:add': count}
 

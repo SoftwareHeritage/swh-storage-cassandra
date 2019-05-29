@@ -696,7 +696,7 @@ class Storage:
                     'behavior, three arguments), not two')
             if isinstance(snapshots, (int, bytes)):
                 # Called by legacy code that uses the new api/client.py
-                (origin, visit, snapshots) = \
+                (origin_id, visit, snapshots) = \
                     (snapshots, origin, [visit])
             else:
                 # Called by legacy code that uses the old api/client.py
