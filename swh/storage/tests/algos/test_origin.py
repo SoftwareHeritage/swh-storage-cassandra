@@ -3,14 +3,15 @@
 # License: GNU General Public License version 3, or any later version
 # See top-level LICENSE file for more information
 
+import unittest
 from unittest.mock import patch
 
 from swh.storage.in_memory import Storage
 from swh.storage.algos.origin import iter_origins
 
 
-def assert_list_eq(left, right, msg=None):
-    assert list(left) == list(right), msg
+def assert_count_eq(left, right, msg=None):
+    unittest.TestCase().assertCountEqual(list(left), list(right), msg)
 
 
 def test_iter_origins():
@@ -20,42 +21,48 @@ def test_iter_origins():
         {'url': 'qux'},
         {'url': 'quuz'},
     ])
-    assert_list_eq(iter_origins(storage), origins)
-    assert_list_eq(iter_origins(storage, batch_size=1), origins)
-    assert_list_eq(iter_origins(storage, batch_size=2), origins)
+    origins.sort(key=lambda orig: orig['id'])
+    assert_count_eq(iter_origins(storage), origins)
+    assert_count_eq(iter_origins(storage, batch_size=1), origins)
+    assert_count_eq(iter_origins(storage, batch_size=2), origins)
 
-    for i in range(1, 5):
-        assert_list_eq(
-            iter_origins(storage, origin_from=i+1),
+    for i in range(0, 3):
+        assert_count_eq(
+            iter_origins(storage, origin_from=origins[i]['id']),
             origins[i:],
             i)
 
-        assert_list_eq(
-            iter_origins(storage, origin_from=i+1, batch_size=1),
+        assert_count_eq(
+            iter_origins(storage, origin_from=origins[i]['id'],
+                         batch_size=1),
             origins[i:],
             i)
 
-        assert_list_eq(
-            iter_origins(storage, origin_from=i+1, batch_size=2),
+        assert_count_eq(
+            iter_origins(storage, origin_from=origins[i]['id'],
+                         batch_size=2),
             origins[i:],
             i)
 
-        for j in range(i, 5):
-            assert_list_eq(
+        for j in range(i, 3):
+            assert_count_eq(
                 iter_origins(
-                    storage, origin_from=i+1, origin_to=j+1),
+                    storage, origin_from=origins[i]['id'],
+                    origin_to=origins[j]['id']),
                 origins[i:j],
                 (i, j))
 
-            assert_list_eq(
+            assert_count_eq(
                 iter_origins(
-                    storage, origin_from=i+1, origin_to=j+1, batch_size=1),
+                    storage, origin_from=origins[i]['id'],
+                    origin_to=origins[j]['id'], batch_size=1),
                 origins[i:j],
                 (i, j))
 
-            assert_list_eq(
+            assert_count_eq(
                 iter_origins(
-                    storage, origin_from=i+1, origin_to=j+1, batch_size=2),
+                    storage, origin_from=origins[i]['id'],
+                    origin_to=origins[j]['id'], batch_size=2),
                 origins[i:j],
                 (i, j))
 
@@ -67,8 +74,8 @@ def test_iter_origins_batch_size(mock_origin_get_range):
 
     list(iter_origins(storage))
     mock_origin_get_range.assert_called_with(
-        origin_from=1, origin_count=10000)
+        origin_from=b'\x00'*20, origin_count=10000)
 
     list(iter_origins(storage, batch_size=42))
     mock_origin_get_range.assert_called_with(
-        origin_from=1, origin_count=42)
+        origin_from=b'\x00'*20, origin_count=42)

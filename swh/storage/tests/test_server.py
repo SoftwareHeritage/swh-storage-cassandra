@@ -101,7 +101,7 @@ def test_load_and_check_config_local_incomplete_configuration(tmpdir):
 
         assert (
             e.value.args[0] ==
-            "Invalid configuration; missing '%s' config entry" % key
+            "Invalid configuration; missing config entries: %s" % key
         )
 
 
