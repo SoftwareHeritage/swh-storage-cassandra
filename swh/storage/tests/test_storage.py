@@ -2283,7 +2283,7 @@ class CommonTestStorage(TestStorageData):
         by_id = self.storage.snapshot_get(bogus_snapshot_id)
         self.assertIsNone(by_id)
 
-        bogus_origin_id = '\x01'
+        bogus_origin_id = b'\x01'
         by_ov = self.storage.snapshot_get_by_origin_visit(
                 bogus_origin_id, bogus_visit_id)
 
