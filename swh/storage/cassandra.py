@@ -898,18 +898,18 @@ class CassandraStorage:
     def release_missing(self, releases):
         return self._missing('release', releases)
 
-    def release_get(self, release_ids):
+    def release_get(self, releases):
         rows = self._proxy.execute_and_retry(
             'SELECT * FROM release WHERE id IN ({})'.format(
-                ', '.join('%s' for _ in release_ids)),
-            release_ids)
+                ', '.join('%s' for _ in releases)),
+            releases)
         rels = {}
         for row in rows:
             release = Release(**row._asdict())
             release = release_from_db(release)
             rels[row.id] = release.to_dict()
 
-        for rel_id in release_ids:
+        for rel_id in releases:
             yield rels.get(rel_id)
 
     def snapshot_add(self, snapshots, origin=None, visit=None):
@@ -920,12 +920,10 @@ class CassandraStorage:
                     'behavior, three arguments), not two')
             if isinstance(snapshots, (int, bytes)):
                 # Called by legacy code that uses the new api/client.py
-                (origin_id, visit_id, snapshots) = \
+                (origin, visit, snapshots) = \
                     (snapshots, origin, [visit])
             else:
                 # Called by legacy code that uses the old api/client.py
-                origin_id = origin
-                visit_id = visit
                 snapshots = [snapshots]
 
         count = 0
@@ -953,10 +951,10 @@ class CassandraStorage:
             # with half the branches.
             self._proxy.snapshot_add_one(snapshot['id'])
 
-        if origin_id:
+        if origin:
             # Legacy API, there can be only one snapshot
             self.origin_visit_update(
-                origin_id, visit_id, snapshot=snapshots[0]['id'])
+                origin, visit, snapshot=snapshots[0]['id'])
 
         return {'snapshot:add': count}
 
