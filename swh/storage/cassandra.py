@@ -654,12 +654,12 @@ class CassandraStorage:
                 # TODO: what to do if there are more than one?
                 pk = pks[0]
                 res = self._proxy.content_get_from_pk(pk._asdict())
-                # Rows in 'content' are always inserted before corresponding
-                # rows in 'content_by_*', there should always be one.
-                assert res is not None
-                content_metadata = res._asdict()
-                content_metadata.pop('ctime')
-                yield content_metadata
+                # Rows in 'content' are inserted after corresponding
+                # rows in 'content_by_*', so we might be missing it
+                if res:
+                    content_metadata = res._asdict()
+                    content_metadata.pop('ctime')
+                    yield content_metadata
             else:
                 # FIXME: should really be None
                 yield {
@@ -688,13 +688,13 @@ class CassandraStorage:
         results = []
         for pk in found_pks:
             res = self._proxy.content_get_from_pk(pk)
-            # Rows in 'content' are always inserted before corresponding
-            # rows in 'content_by_*', there should always be one.
-            assert res is not None
-            results.append({
-                **res._asdict(),
-                'ctime': res.ctime.replace(tzinfo=datetime.timezone.utc)
-            })
+            # Rows in 'content' are inserted after corresponding
+            # rows in 'content_by_*', so we might be missing it
+            if res:
+                results.append({
+                    **res._asdict(),
+                    'ctime': res.ctime.replace(tzinfo=datetime.timezone.utc)
+                })
         return results
 
     def content_missing(self, content, key_hash='sha1'):
