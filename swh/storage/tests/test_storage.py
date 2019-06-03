@@ -3258,7 +3258,7 @@ class CommonPropTestStorage:
 
         nb_origins = len(new_origins)
 
-        self.storage.origin_add(new_origins)
+        new_origins = self.storage.origin_add(new_origins)
 
         origin_count = random.randint(1, nb_origins)
 
