@@ -349,10 +349,12 @@ class TestStorageData:
 
         self.origin = {
             'url': 'file:///dev/null',
+            'type': 'git',
         }
 
         self.origin2 = {
             'url': 'file:///dev/zero',
+            'type': 'hg',
         }
 
         self.provider = {
@@ -1370,6 +1372,7 @@ class CommonTestStorage(TestStorageData):
         # when
         origin_visit1 = self.storage.origin_visit_add(
             origin_url,
+            type='git',
             date=self.date_visit2)
 
         # then
@@ -1380,6 +1383,7 @@ class CommonTestStorage(TestStorageData):
         self.assertEqual(actual_origin_visits,
                          [{
                              'origin': origin_url,
+                             'type': 'git',
                              'date': self.date_visit2,
                              'visit': origin_visit1['visit'],
                              'status': 'ongoing',
@@ -1390,6 +1394,7 @@ class CommonTestStorage(TestStorageData):
         expected_origin = self.origin2.copy()
         data = {
             'origin': origin_url,
+            'type': 'git',
             'date': self.date_visit2,
             'visit': origin_visit1['visit'],
             'status': 'ongoing',
@@ -1420,6 +1425,7 @@ class CommonTestStorage(TestStorageData):
         self.assertEqual(actual_origin_visits,
                          [{
                              'origin': origin_url,
+                             'type': 'hg',
                              'date': self.date_visit2,
                              'visit': origin_visit1['visit'],
                              'status': 'ongoing',
@@ -1430,6 +1436,7 @@ class CommonTestStorage(TestStorageData):
         expected_origin = self.origin2.copy()
         data = {
             'origin': origin_url,
+            'type': 'hg',
             'date': self.date_visit2,
             'visit': origin_visit1['visit'],
             'status': 'ongoing',
@@ -1472,6 +1479,7 @@ class CommonTestStorage(TestStorageData):
         actual_origin_visits = list(self.storage.origin_visit_get(origin_url))
         self.assertEqual(actual_origin_visits, [{
             'origin': origin_url,
+            'type': self.origin['type'],
             'date': self.date_visit2,
             'visit': origin_visit1['visit'],
             'status': 'full',
@@ -1479,6 +1487,7 @@ class CommonTestStorage(TestStorageData):
             'snapshot': None,
         }, {
             'origin': origin_url,
+            'type': self.origin['type'],
             'date': self.date_visit3,
             'visit': origin_visit2['visit'],
             'status': 'ongoing',
@@ -1491,6 +1500,7 @@ class CommonTestStorage(TestStorageData):
         self.assertEqual(actual_origin_visits_bis,
                          [{
                              'origin': origin_url,
+                             'type': self.origin['type'],
                              'date': self.date_visit2,
                              'visit': origin_visit1['visit'],
                              'status': 'full',
@@ -1503,6 +1513,7 @@ class CommonTestStorage(TestStorageData):
         self.assertEqual(actual_origin_visits_ter,
                          [{
                              'origin': origin_url,
+                             'type': self.origin['type'],
                              'date': self.date_visit3,
                              'visit': origin_visit2['visit'],
                              'status': 'ongoing',
@@ -1515,6 +1526,7 @@ class CommonTestStorage(TestStorageData):
         self.assertEqual(actual_origin_visits2,
                          [{
                              'origin': origin_url2,
+                             'type': self.origin2['type'],
                              'date': self.date_visit3,
                              'visit': origin_visit3['visit'],
                              'status': 'partial',
@@ -1526,6 +1538,7 @@ class CommonTestStorage(TestStorageData):
         expected_origin2 = self.origin.copy()
         data1 = {
             'origin': origin_url,
+            'type': self.origin['type'],
             'date': self.date_visit2,
             'visit': origin_visit1['visit'],
             'status': 'ongoing',
@@ -1534,6 +1547,7 @@ class CommonTestStorage(TestStorageData):
         }
         data2 = {
             'origin': origin_url,
+            'type': self.origin['type'],
             'date': self.date_visit3,
             'visit': origin_visit2['visit'],
             'status': 'ongoing',
@@ -1542,6 +1556,7 @@ class CommonTestStorage(TestStorageData):
         }
         data3 = {
             'origin': origin_url2,
+            'type': self.origin2['type'],
             'date': self.date_visit3,
             'visit': origin_visit3['visit'],
             'status': 'ongoing',
@@ -1550,6 +1565,7 @@ class CommonTestStorage(TestStorageData):
         }
         data4 = {
             'origin': origin_url,
+            'type': self.origin['type'],
             'date': self.date_visit2,
             'visit': origin_visit1['visit'],
             'metadata': visit1_metadata,
@@ -1558,14 +1574,13 @@ class CommonTestStorage(TestStorageData):
         }
         data5 = {
             'origin': origin_url2,
+            'type': self.origin2['type'],
             'date': self.date_visit3,
             'visit': origin_visit3['visit'],
             'status': 'partial',
             'metadata': None,
             'snapshot': None,
         }
-        import pprint
-        pprint.pprint(list(self.journal_writer.objects))
         self.assertEqual(list(self.journal_writer.objects),
                          [('origin', expected_origin2),
                           ('origin', expected_origin),
@@ -1625,6 +1640,7 @@ class CommonTestStorage(TestStorageData):
         expected_origin_visit = origin_visit1.copy()
         expected_origin_visit.update({
             'origin': origin_url,
+            'type': self.origin['type'],
             'visit': origin_visit1['visit'],
             'date': self.date_visit2,
             'metadata': visit1_metadata,
@@ -1650,6 +1666,7 @@ class CommonTestStorage(TestStorageData):
         self.storage.origin_visit_upsert([
             {
                  'origin': origin_url,
+                 'type': self.origin2['type'],
                  'date': self.date_visit2,
                  'visit': 123,
                  'status': 'full',
@@ -1658,6 +1675,7 @@ class CommonTestStorage(TestStorageData):
              },
             {
                  'origin': origin_url,
+                 'type': self.origin2['type'],
                  'date': '2018-01-01 23:00:00+00',
                  'visit': 1234,
                  'status': 'full',
@@ -1671,6 +1689,7 @@ class CommonTestStorage(TestStorageData):
         self.assertEqual(actual_origin_visits, [
             {
                 'origin': origin_url,
+                'type': self.origin2['type'],
                 'date': self.date_visit2,
                 'visit': 123,
                 'status': 'full',
@@ -1679,6 +1698,7 @@ class CommonTestStorage(TestStorageData):
             },
             {
                 'origin': origin_url,
+                'type': self.origin2['type'],
                 'date': self.date_visit3,
                 'visit': 1234,
                 'status': 'full',
@@ -1690,6 +1710,7 @@ class CommonTestStorage(TestStorageData):
         expected_origin = self.origin2.copy()
         data1 = {
             'origin': origin_url,
+            'type': self.origin2['type'],
             'date': self.date_visit2,
             'visit': 123,
             'status': 'full',
@@ -1698,6 +1719,7 @@ class CommonTestStorage(TestStorageData):
         }
         data2 = {
             'origin': origin_url,
+            'type': self.origin2['type'],
             'date': self.date_visit3,
             'visit': 1234,
             'status': 'full',
@@ -1722,6 +1744,7 @@ class CommonTestStorage(TestStorageData):
             date=self.date_visit2)
         self.storage.origin_visit_upsert([{
              'origin': origin_url,
+             'type': self.origin2['type'],
              'date': self.date_visit2,
              'visit': origin_visit1['visit'],
              'status': 'full',
@@ -1737,6 +1760,7 @@ class CommonTestStorage(TestStorageData):
         self.assertEqual(actual_origin_visits,
                          [{
                              'origin': origin_url,
+                             'type': self.origin2['type'],
                              'date': self.date_visit2,
                              'visit': origin_visit1['visit'],
                              'status': 'full',
@@ -1747,6 +1771,7 @@ class CommonTestStorage(TestStorageData):
         expected_origin = self.origin2.copy()
         data1 = {
             'origin': origin_url,
+            'type': self.origin2['type'],
             'date': self.date_visit2,
             'visit': origin_visit1['visit'],
             'status': 'ongoing',
@@ -1755,6 +1780,7 @@ class CommonTestStorage(TestStorageData):
         }
         data2 = {
             'origin': origin_url,
+            'type': self.origin2['type'],
             'date': self.date_visit2,
             'visit': origin_visit1['visit'],
             'status': 'full',
@@ -1864,6 +1890,7 @@ class CommonTestStorage(TestStorageData):
         expected_origin = self.origin.copy()
         data1 = {
             'origin': origin_url,
+            'type': self.origin['type'],
             'date': self.date_visit1,
             'visit': origin_visit1['visit'],
             'status': 'ongoing',
@@ -1872,6 +1899,7 @@ class CommonTestStorage(TestStorageData):
         }
         data2 = {
             'origin': origin_url,
+            'type': self.origin['type'],
             'date': self.date_visit1,
             'visit': origin_visit1['visit'],
             'status': 'ongoing',
@@ -1901,6 +1929,7 @@ class CommonTestStorage(TestStorageData):
         expected_origin = self.origin.copy()
         data1 = {
             'origin': origin_url,
+            'type': self.origin['type'],
             'date': self.date_visit1,
             'visit': origin_visit1['visit'],
             'status': 'ongoing',
@@ -1909,6 +1938,7 @@ class CommonTestStorage(TestStorageData):
         }
         data2 = {
             'origin': origin_url,
+            'type': self.origin['type'],
             'date': self.date_visit1,
             'visit': origin_visit1['visit'],
             'status': 'ongoing',
@@ -2162,6 +2192,7 @@ class CommonTestStorage(TestStorageData):
         expected_origin = self.origin.copy()
         data1 = {
             'origin': origin_url,
+            'type': self.origin['type'],
             'date': self.date_visit1,
             'visit': origin_visit1['visit'],
             'status': 'ongoing',
@@ -2170,6 +2201,7 @@ class CommonTestStorage(TestStorageData):
         }
         data2 = {
             'origin': origin_url,
+            'type': self.origin['type'],
             'date': self.date_visit1,
             'visit': origin_visit1['visit'],
             'status': 'ongoing',
@@ -2178,6 +2210,7 @@ class CommonTestStorage(TestStorageData):
         }
         data3 = {
             'origin': origin_url,
+            'type': self.origin['type'],
             'date': self.date_visit2,
             'visit': origin_visit2['visit'],
             'status': 'ongoing',
@@ -2186,6 +2219,7 @@ class CommonTestStorage(TestStorageData):
         }
         data4 = {
             'origin': origin_url,
+            'type': self.origin['type'],
             'date': self.date_visit2,
             'visit': origin_visit2['visit'],
             'status': 'ongoing',
@@ -2224,6 +2258,7 @@ class CommonTestStorage(TestStorageData):
         expected_origin = self.origin.copy()
         data1 = {
             'origin': origin_url,
+            'type': self.origin['type'],
             'date': self.date_visit1,
             'visit': origin_visit1['visit'],
             'status': 'ongoing',
@@ -2232,6 +2267,7 @@ class CommonTestStorage(TestStorageData):
         }
         data2 = {
             'origin': origin_url,
+            'type': self.origin['type'],
             'date': self.date_visit1,
             'visit': origin_visit1['visit'],
             'status': 'ongoing',
@@ -2240,6 +2276,7 @@ class CommonTestStorage(TestStorageData):
         }
         data3 = {
             'origin': origin_url,
+            'type': self.origin['type'],
             'date': self.date_visit2,
             'visit': origin_visit2['visit'],
             'status': 'ongoing',
@@ -2248,6 +2285,7 @@ class CommonTestStorage(TestStorageData):
         }
         data4 = {
             'origin': origin_url,
+            'type': self.origin['type'],
             'date': self.date_visit2,
             'visit': origin_visit2['visit'],
             'status': 'ongoing',

@@ -1103,12 +1103,16 @@ class Storage:
         raise NotImplementedError('fetch_history_get is deprecated, use '
                                   'origin_visit_get instead.')
 
-    def origin_visit_add(self, origin, date=None, *, ts=None):
+    def origin_visit_add(self, origin, date=None, type=None, *, ts=None):
         """Add an origin_visit for the origin at date with status 'ongoing'.
+
+        For backward compatibility, `type` is optional and defaults to
+        the origin's type.
 
         Args:
             origin (int): visited origin's identifier
             date: timestamp of such visit
+            type (str): the type of loader used for the visit (hg, git, ...)
 
         Returns:
             dict: dictionary with keys origin and visit where:
@@ -1138,6 +1142,7 @@ class Storage:
             visit_id = len(self._origin_visits[origin_url]) + 1
             visit = {
                 'origin': origin_url,
+                'type': type or self._origins[origin_url]['type'],
                 'date': date,
                 'status': 'ongoing',
                 'snapshot': None,
@@ -1183,7 +1188,8 @@ class Storage:
         if self.journal_writer:
             origin = self.origin_get([{'url': origin_url}])[0]
             self.journal_writer.write_update('origin_visit', {
-                'origin': origin['url'], 'visit': visit_id,
+                'origin': origin['url'], 'type': origin['type'],
+                'visit': visit_id,
                 'status': status or visit['status'],
                 'date': visit['date'],
                 'metadata': metadata or visit['metadata'],
@@ -1208,6 +1214,7 @@ class Storage:
 
                 origin: Visited Origin id
                 visit: origin visit id
+                type: type of loader used for the visit
                 date: timestamp of such visit
                 status: Visit's new status
                 metadata: Data associated to the visit
