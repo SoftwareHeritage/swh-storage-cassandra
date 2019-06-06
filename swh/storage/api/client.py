@@ -209,8 +209,8 @@ class RemoteStorage(SWHRemoteAPI):
     def person_get(self, person):
         return self.post('person', {'person': person})
 
-    def fetch_history_start(self, origin_id):
-        return self.post('fetch_history/start', {'origin_id': origin_id})
+    def fetch_history_start(self, origin_url):
+        return self.post('fetch_history/start', {'origin_url': origin_url})
 
     def fetch_history_end(self, fetch_history_id, data):
         return self.post('fetch_history/end',
@@ -233,16 +233,16 @@ class RemoteStorage(SWHRemoteAPI):
     def tool_get(self, tool):
         return self.post('tool/data', {'tool': tool})
 
-    def origin_metadata_add(self, origin_id, ts, provider, tool, metadata):
-        return self.post('origin/metadata/add', {'origin_id': origin_id,
+    def origin_metadata_add(self, origin_url, ts, provider, tool, metadata):
+        return self.post('origin/metadata/add', {'origin_url': origin_url,
                                                  'ts': ts,
                                                  'provider': provider,
                                                  'tool': tool,
                                                  'metadata': metadata})
 
-    def origin_metadata_get_by(self, origin_id, provider_type=None):
+    def origin_metadata_get_by(self, origin_url, provider_type=None):
         return self.post('origin/metadata/get', {
-            'origin_id': origin_id,
+            'origin_url': origin_url,
             'provider_type': provider_type
         })
 

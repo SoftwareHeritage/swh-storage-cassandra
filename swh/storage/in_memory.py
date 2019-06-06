@@ -14,8 +14,8 @@ import itertools
 import random
 import warnings
 
-from swh.model.hashutil import DEFAULT_ALGORITHMS, hash_to_bytes
-from swh.model.identifiers import normalize_timestamp, origin_identifier
+from swh.model.hashutil import DEFAULT_ALGORITHMS
+from swh.model.identifiers import normalize_timestamp
 from swh.objstorage import get_objstorage
 from swh.objstorage.exc import ObjNotFoundError
 
@@ -694,7 +694,7 @@ class Storage:
                 raise TypeError(
                     'snapshot_add expects one argument (or, as a legacy '
                     'behavior, three arguments), not two')
-            if isinstance(snapshots, (int, bytes)):
+            if isinstance(snapshots, (int, str)):
                 # Called by legacy code that uses the new api/client.py
                 (origin, visit, snapshots) = \
                     (snapshots, origin, [visit])
@@ -924,64 +924,36 @@ class Storage:
         return ret
 
     def origin_get(self, origins):
-        """Return origins, either all identified by their ids or all
-        identified by tuples (type, url).
+        """Return origins that are already known.
 
         Args:
-            origin: a list of dictionaries representing the individual
+            origins: a list of dictionaries representing the individual
                 origins to find.
-                These dicts have either the keys type and url:
+                These dicts have a single key:
 
-                - url (bytes): the url the origin points to
-
-                or the id:
-
-                - id (int): the origin's identifier
+                - url (str): the url the origin points to
 
         Returns:
-            dict: the origin dictionary with the keys:
-
-            - id: origin's id
-            - url: origin's url
-
-        Raises:
-            ValueError: if the keys does not match (url and type) nor id.
+            Optional[dict]: the origin dictionary with the single
+                           `url` key.
 
         """
         if isinstance(origins, dict):
             # Old API
             return_single = True
             origins = [origins]
+        elif len(origins) == 0:
+            return []
         else:
             return_single = False
 
-        # Sanity check to be error-compatible with the pgsql backend
-        if any('id' in origin for origin in origins) \
-                and not all('id' in origin for origin in origins):
-            raise ValueError(
-                'Either all origins or none at all should have an "id".')
-        if any('type' in origin and 'url' in origin for origin in origins) \
-                and not all('type' in origin and 'url' in origin
-                            for origin in origins):
-            raise ValueError(
-                'Either all origins or none at all should have a '
-                '"type" and an "url".')
-
         results = []
         for origin in origins:
-            if 'id' in origin:
-                origin_id = origin['id']
-            elif 'url' in origin:
-                origin_id = self._origin_id(origin)
+            origin = self._origins.get(origin['url'])
+            if origin:
+                results.append(origin)
             else:
-                raise ValueError(
-                    'Origin must have either id or (type and url).')
-            origin = None
-            # self._origin_id can return None
-            if origin_id is not None and origin_id in self._origins:
-                origin = copy.deepcopy(self._origins[origin_id])
-                origin['id'] = origin_id
-            results.append(origin)
+                results.append(None)
 
         if return_single:
             assert len(results) == 1
@@ -989,28 +961,40 @@ class Storage:
         else:
             return results
 
-    def origin_get_range(self, origin_from=b'\x00'*20, origin_count=100):
-        """Retrieve ``origin_count`` origins whose ids are greater
-        or equal than ``origin_from``.
-
-        Origins are sorted by id before retrieving them.
+    def origin_list(self, paging_token=None, limit=100):
+        """Retrieve ``limit`` origins. When a query does not return
+        all results, a `paging_token` is returned and can be used
+        to fetch the next results.
+        If the returned `paging_token` is `None`, it means all the origins
+        were returned.
 
         Args:
-            origin_from (int): the minimum id of origins to retrieve
-            origin_count (int): the maximum number of origins to retrieve
+            paging_token (Optional[str]): An opaque identifier used to
+                                          resume a listing
+            limit (int): the maximum number of origins to retrieve
 
-        Yields:
-            dicts containing origin information as returned
-            by :meth:`swh.storage.in_memory.Storage.origin_get`.
+        Returns:
+            dict with keys:
+
+            * paging_token (Optional[str]): an opaque identifier
+            * results: list of dicts `{'url': origin_url}`
         """
         nb = 0
-        for (idx, origin) in sorted(self._origins.items()):
-            if idx < origin_from:
+        results = []
+        for (url, origin) in sorted(self._origins.items()):
+            if paging_token is not None and origin['url'] <= paging_token:
                 continue
-            yield origin
+            results.append(origin)
             nb += 1
-            if nb == origin_count:
-                break
+            if nb >= limit:
+                return {
+                    'paging_token': origin['url'],
+                    'results': results,
+                }
+        return {
+            'paging_token': None,
+            'results': results,
+        }
 
     def origin_search(self, url_pattern, offset=0, limit=50,
                       regexp=False, with_visit=False, db=None, cur=None):
@@ -1073,14 +1057,10 @@ class Storage:
 
                 - url (bytes): the url the origin points to
 
-        Returns:
-            list: given origins as dict updated with their id
-
         """
-        origins = copy.deepcopy(origins)
         for origin in origins:
-            origin['id'] = self.origin_add_one(origin)
-        return origins
+            self.origin_add_one(origin)
+        return [origin for origin in origins]
 
     def origin_add_one(self, origin):
         """Add origin to the storage
@@ -1092,21 +1072,18 @@ class Storage:
                 - url (bytes): the url the origin points to
 
         Returns:
-            the id of the added origin, or of the identical one that already
-            exists.
+            the url of the origin
 
         """
         origin = copy.deepcopy(origin)
-        origin_id = self._origin_id(origin)
-        if origin_id is None:
+        if origin['url'] not in self._origins:
             if self.journal_writer:
                 self.journal_writer.write_addition('origin', origin)
-            origin['id'] = origin_id = hash_to_bytes(origin_identifier(origin))
-            self._origins[origin_id] = origin
-            self._origin_visits[origin_id] = []
-            self._objects[origin_id].append(('origin', origin_id))
+            self._origins[origin['url']] = origin
+            self._origin_visits[origin['url']] = []
+            self._objects[origin['url']].append(('origin', None))
 
-        return origin_id
+        return origin['url']
 
     def fetch_history_start(self, origin_id):
         """Add an entry for origin origin_id in fetch_history. Returns the id
@@ -1150,17 +1127,17 @@ class Storage:
                           DeprecationWarning)
             date = ts
 
-        origin_id = origin  # TODO: rename the argument
+        origin_url = origin  # TODO: rename the argument
 
         if isinstance(date, str):
             date = dateutil.parser.parse(date)
 
         visit_ret = None
-        if origin_id in self._origin_visits:
+        if origin_url in self._origin_visits:
             # visit ids are in the range [1, +inf[
-            visit_id = len(self._origin_visits[origin_id]) + 1
+            visit_id = len(self._origin_visits[origin_url]) + 1
             visit = {
-                'origin': origin_id,
+                'origin': origin_url,
                 'date': date,
                 'status': 'ongoing',
                 'snapshot': None,
@@ -1169,14 +1146,13 @@ class Storage:
             }
 
             if self.journal_writer:
-                origin = self.origin_get([{'id': origin_id}])[0]
-                del origin['id']
+                origin = self.origin_get([{'url': origin_url}])[0]
                 self.journal_writer.write_addition('origin_visit', {
-                    **visit, 'origin': origin})
+                    **visit, 'origin': origin_url})
 
-            self._origin_visits[origin_id].append(visit)
+            self._origin_visits[origin_url].append(visit)
             visit_ret = {
-                'origin': origin_id,
+                'origin': origin_url,
                 'visit': visit_id,
             }
 
@@ -1198,23 +1174,22 @@ class Storage:
             None
 
         """
-        origin_id = origin  # TODO: rename the argument
+        origin_url = origin  # TODO: rename the argument
 
         try:
-            visit = self._origin_visits[origin_id][visit_id-1]
+            visit = self._origin_visits[origin_url][visit_id-1]
         except IndexError:
-            raise ValueError('Invalid origin_id or visit_id') from None
+            raise ValueError('Invalid origin_url or visit_id') from None
         if self.journal_writer:
-            origin = self.origin_get([{'id': origin_id}])[0]
-            del origin['id']
+            origin = self.origin_get([{'url': origin_url}])[0]
             self.journal_writer.write_update('origin_visit', {
-                'origin': origin, 'visit': visit_id,
+                'origin': origin['url'], 'visit': visit_id,
                 'status': status or visit['status'],
                 'date': visit['date'],
                 'metadata': metadata or visit['metadata'],
                 'snapshot': snapshot or visit['snapshot']})
-        if origin_id not in self._origin_visits or \
-           visit_id > len(self._origin_visits[origin_id]):
+        if origin_url not in self._origin_visits or \
+           visit_id > len(self._origin_visits[origin_url]):
             return
         if status:
             visit['status'] = status
@@ -1226,7 +1201,7 @@ class Storage:
     def origin_visit_upsert(self, visits):
         """Add a origin_visits with a specific id and with all its data.
         If there is already an origin_visit with the same
-        `(origin_id, visit_id)`, updates it instead of inserting a new one.
+        `(origin_url, visit_id)`, updates it instead of inserting a new one.
 
         Args:
             visits: iterable of dicts with keys:
@@ -1247,16 +1222,14 @@ class Storage:
         if self.journal_writer:
             for visit in visits:
                 visit = visit.copy()
-                visit['origin'] = self.origin_get([{'id': visit['origin']}])[0]
-                del visit['origin']['id']
                 self.journal_writer.write_addition('origin_visit', visit)
 
         for visit in visits:
-            origin_id = visit['origin']
+            origin_url = visit['origin']
             visit_id = visit['visit']
-            while len(self._origin_visits[origin_id-1]) < visit_id:
-                self._origin_visits[origin_id-1].append(None)
-            visit = self._origin_visits[origin_id-1][visit_id-1] = visit
+            while len(self._origin_visits[origin_url]) < visit_id:
+                self._origin_visits[origin_url].append(None)
+            visit = self._origin_visits[origin_url][visit_id-1] = visit
 
     def origin_visit_get(self, origin, last_visit=None, limit=None):
         """Retrieve all the origin's visit's information.
@@ -1347,13 +1320,13 @@ class Storage:
         """Recomputes the statistics for `stat_counters`."""
         pass
 
-    def origin_metadata_add(self, origin_id, ts, provider, tool, metadata,
+    def origin_metadata_add(self, origin_url, ts, provider, tool, metadata,
                             db=None, cur=None):
         """ Add an origin_metadata for the origin at ts with provenance and
         metadata.
 
         Args:
-            origin_id (int): the origin's id for which the metadata is added
+            origin_url (int): the origin's id for which the metadata is added
             ts (datetime): timestamp of the found metadata
             provider: id of the provider of metadata (ex:'hal')
             tool: id of the tool used to extract metadata
@@ -1363,27 +1336,27 @@ class Storage:
             ts = dateutil.parser.parse(ts)
 
         origin_metadata = {
-                'origin_id': origin_id,
+                'origin_url': origin_url,
                 'discovery_date': ts,
                 'tool_id': tool,
                 'metadata': metadata,
                 'provider_id': provider,
                 }
-        self._origin_metadata[origin_id].append(origin_metadata)
+        self._origin_metadata[origin_url].append(origin_metadata)
         return None
 
-    def origin_metadata_get_by(self, origin_id, provider_type=None, db=None,
+    def origin_metadata_get_by(self, origin_url, provider_type=None, db=None,
                                cur=None):
-        """Retrieve list of all origin_metadata entries for the origin_id
+        """Retrieve list of all origin_metadata entries for the origin_url
 
         Args:
-            origin_id (int): the unique origin's identifier
+            origin_url (int): the unique origin's identifier
             provider_type (str): (optional) type of provider
 
         Returns:
             list of dicts: the origin_metadata dictionary with the keys:
 
-            - origin_id (int): origin's identifier
+            - origin_url (int): origin's identifier
             - discovery_date (datetime): timestamp of discovery
             - tool_id (int): metadata's extracting tool
             - metadata (jsonb)
@@ -1394,7 +1367,7 @@ class Storage:
 
         """
         metadata = []
-        for item in self._origin_metadata[origin_id]:
+        for item in self._origin_metadata[origin_url]:
             item = copy.deepcopy(item)
             provider = self.metadata_provider_get(item['provider_id'])
             for attr in ('name', 'type', 'url'):
@@ -1497,14 +1470,6 @@ class Storage:
             'name': provider['provider_name'],
             'url': provider['provider_url']})
         return self._metadata_providers.get(key)
-
-    def _origin_id(self, origin):
-        origin_id = None
-        for stored_origin in self._origins.values():
-            if stored_origin['url'] == origin['url']:
-                origin_id = stored_origin['id']
-                break
-        return origin_id
 
     def _person_add(self, person):
         """Add a person in storage.

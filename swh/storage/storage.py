@@ -24,7 +24,6 @@ from .algos import diff
 from .journal_writer import get_journal_writer
 
 from swh.model.hashutil import ALGORITHMS, hash_to_bytes
-from swh.model.identifiers import origin_identifier
 from swh.objstorage import get_objstorage
 from swh.objstorage.exc import ObjNotFoundError
 
@@ -1522,14 +1521,12 @@ class Storage():
         origin_id = list(db.origin_get_with(
             [(origin['url'],)], cur))[0][0]
         if origin_id:
-            return origin_id
+            return origin['url']
 
         if self.journal_writer:
             self.journal_writer.write_addition('origin', origin)
 
-        origin_id = hash_to_bytes(origin_identifier(origin))
-
-        return db.origin_add(origin_id, origin['url'], cur)
+        return db.origin_add(origin['url'], cur)
 
     @db_transaction()
     def fetch_history_start(self, origin_id, db=None, cur=None):
