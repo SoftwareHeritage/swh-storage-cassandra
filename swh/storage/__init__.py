@@ -16,6 +16,7 @@ class HashCollision(Exception):
 
 STORAGE_IMPLEMENTATION = {
     'pipeline', 'local', 'remote', 'memory', 'filter', 'buffer', 'retry',
+    'cassandra',
 }
 
 
@@ -53,6 +54,8 @@ def get_storage(cls, **kwargs):
         from .api.client import RemoteStorage as Storage
     elif cls == 'local':
         from .storage import Storage
+    elif cls == 'cassandra':
+        from .cassandra import CassandraStorage as Storage
     elif cls == 'memory':
         from .in_memory import Storage
     elif cls == 'filter':
