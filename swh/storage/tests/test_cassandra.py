@@ -80,7 +80,7 @@ def cassandra_cluster(tmpdir_factory):
             native_transport_port=native_transport_port,
         ))
     with open(str(cassandra_conf.join('jvm.options')), 'w') as fd:
-        fd.write('-Xmn=1M -Xms=20M -XMx=200M\n')  # some sane values
+        fd.write('-Xmn=100M -Xms=20M -XMx=200M\n')  # some sane values
 
     if os.environ.get('LOG_CASSANDRA'):
         stdout = stderr = subprocess.PIPE

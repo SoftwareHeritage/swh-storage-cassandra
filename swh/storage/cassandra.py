@@ -82,13 +82,6 @@ CREATE TYPE IF NOT EXISTS person (
     email       blob
 );
 
-CREATE TYPE IF NOT EXISTS dir_entry (
-    target  blob,  -- id of target revision
-    name    blob,  -- path name, relative to containing dir
-    perms   int,   -- unix-like permissions
-    type    ascii
-);
-
 CREATE TABLE IF NOT EXISTS content (
     sha1          blob,
     sha1_git      blob,
@@ -133,7 +126,15 @@ CREATE TABLE IF NOT EXISTS release
 
 CREATE TABLE IF NOT EXISTS directory (
     id              blob PRIMARY KEY,
-    entries_        frozen<list<dir_entry>>
+);
+
+CREATE TABLE IF NOT EXISTS directory_entry (
+    directory_id    blob,
+    name            blob,  -- path name, relative to containing dir
+    target          blob,  -- id of target revision
+    perms           int,   -- unix-like permissions
+    type            ascii,
+    PRIMARY KEY ((directory_id), name)
 );
 
 CREATE TABLE IF NOT EXISTS snapshot (
@@ -309,8 +310,6 @@ class CassandraProxy:
             keyspace, 'microtimestamp', Timestamp)
         self._cluster.register_user_type(
             keyspace, 'person', Person)
-        self._cluster.register_user_type(
-            keyspace, 'dir_entry', DirectoryEntry)
 
         self._prepared_statements = {}
 
@@ -389,13 +388,19 @@ class CassandraProxy:
     def release_add_one(self, release, *, statement):
         self._add_one(statement, 'release', release, self._release_keys)
 
-    _directory_keys = ['id', 'entries_']
-    _directory_attributes = ['id', 'entries']
+    _directory_keys = ['id']
 
     @prepared_insert_statement('directory', _directory_keys)
-    def directory_add_one(self, directory, *, statement):
-        self._add_one(
-            statement, 'directory', directory, self._directory_attributes)
+    def directory_add_one(self, directory_id, *, statement):
+        self.execute_and_retry(statement, [directory_id])
+        self.increment_counter('directory', 1)
+
+    _directory_entry_keys = ['directory_id', 'name', 'type', 'target', 'perms']
+
+    @prepared_insert_statement('directory_entry', _directory_entry_keys)
+    def directory_entry_add_one(self, entry, *, statement):
+        self.execute_and_retry(
+            statement, [entry[key] for key in self._directory_entry_keys])
 
     _snapshot_keys = ['id']
 
@@ -679,6 +684,7 @@ class CassandraStorage:
     def content_find(self, content):
         filter_algos = list(set(content).intersection(HASH_ALGORITHMS))
         if not filter_algos:
+            print(content)
             raise ValueError('content keys must contain at least one of: '
                              '%s' % ', '.join(sorted(HASH_ALGORITHMS)))
         # Find all contents with one of the hash that matches
@@ -720,9 +726,20 @@ class CassandraStorage:
         missing = self.directory_missing([dir_['id'] for dir_ in directories])
 
         for directory in directories:
-            if directory['id'] in missing:
-                self._proxy.directory_add_one(
-                    Directory.from_dict(directory))
+            if directory['id'] not in missing:
+                continue
+
+            directory = Directory.from_dict(directory)
+
+            for entry in directory.entries:
+                entry = entry.to_dict()
+                entry['directory_id'] = directory.id
+                self._proxy.directory_entry_add_one(entry)
+
+            # Add the directory *after* adding all the entries, so someone
+            # calling snapshot_get_branch in the meantime won't end up
+            # with half the entries.
+            self._proxy.directory_add_one(directory.id)
 
         return {'directory:add': len(missing)}
 
@@ -748,17 +765,16 @@ class CassandraStorage:
         return ret
 
     def _directory_ls(self, directory_id, recursive, prefix=b''):
-        rows = list(self._proxy.execute_and_retry(
-            'SELECT * FROM directory WHERE id = %s',
-            (directory_id,)))
-        if not rows:
+        if self.directory_missing([directory_id]):
             return
-        assert len(rows) == 1
+        rows = list(self._proxy.execute_and_retry(
+            'SELECT * FROM directory_entry WHERE directory_id = %s',
+            (directory_id,)))
 
-        dir_ = rows[0]._asdict()
-        dir_['entries'] = dir_.pop('entries_')
-        dir_ = Directory(**dir_)
-        for entry in dir_.entries:
+        for row in rows:
+            entry = row._asdict()
+            del entry['directory_id']
+            entry = DirectoryEntry.from_dict(entry)
             ret = self._join_dentry_to_content(entry)
             ret['name'] = prefix + ret['name']
             ret['dir_id'] = directory_id
