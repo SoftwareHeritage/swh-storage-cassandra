@@ -450,11 +450,11 @@ class CassandraProxy:
     def snapshot_branch_get(self, snapshot_id, from_, limit, *, statement):
         return self.execute_and_retry(statement, [snapshot_id, from_, limit])
 
-    @prepared_statement('INSERT INTO origin (url, type, next_visit_id) '
-                        'VALUES (?, ?, 1) IF NOT EXISTS')
+    @prepared_statement('INSERT INTO origin (url, next_visit_id) '
+                        'VALUES (?, 1) IF NOT EXISTS')
     def origin_add_one(self, origin, *, statement):
         self.execute_and_retry(
-            statement, [origin['url'], origin.get('type')])
+            statement, [origin['url']])
         self.increment_counter('origin', 1)
 
     @prepared_statement('SELECT * FROM origin WHERE url = ?')
@@ -1141,7 +1141,6 @@ class CassandraStorage:
             assert len(rows) == 1
             result = rows[0]._asdict()
             return {
-                'type': result['type'],
                 'url': result['url'],
             }
         else:
@@ -1164,7 +1163,6 @@ class CassandraStorage:
         return [
             {
                 'url': orig.url,
-                'type': orig.type,
             }
             for orig in origins[offset:offset+limit]]
 
@@ -1217,7 +1215,7 @@ class CassandraStorage:
         visit = {
             'origin': origin_url,
             'date': date,
-            'type': type or origin['type'],
+            'type': type,
             'status': 'ongoing',
             'snapshot': None,
             'metadata': None,
@@ -1225,9 +1223,7 @@ class CassandraStorage:
         }
 
         if self.journal_writer:
-            origin = self.origin_get_one({'url': origin_url})
-            self.journal_writer.write_addition('origin_visit', {
-                **visit, 'origin': origin})
+            self.journal_writer.write_addition('origin_visit', visit)
 
         self._proxy.origin_visit_add_one(visit)
 
@@ -1245,9 +1241,8 @@ class CassandraStorage:
             raise ValueError('This origin visit does not exist.')
 
         if self.journal_writer:
-            origin = self.origin_get_one({'url': origin_url})
             self.journal_writer.write_update('origin_visit', {
-                'origin': origin, 'visit': visit_id,
+                'origin': origin_url, 'visit': visit_id,
                 'type': visit.type,
                 'status': status or visit.status,
                 'date': visit.date.replace(tzinfo=datetime.timezone.utc),
@@ -1282,16 +1277,12 @@ class CassandraStorage:
 
         if self.journal_writer:
             for visit in visits:
-                visit = visit.copy()
-                visit['origin'] = self.origin_get(
-                    [{'url': visit['origin']['url']}])[0]
                 self.journal_writer.write_addition('origin_visit', visit)
 
         for visit in visits:
             visit = visit.copy()
             if visit.get('metadata'):
                 visit['metadata'] = json.dumps(visit['metadata'])
-            visit['origin'] = visit['origin']['url']
             self._proxy.origin_visit_upsert(visit)
 
     @staticmethod
