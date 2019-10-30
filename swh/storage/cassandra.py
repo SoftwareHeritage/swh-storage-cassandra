@@ -23,7 +23,7 @@ from swh.model.model import (
 from swh.objstorage import get_objstorage
 from swh.objstorage.exc import ObjNotFoundError
 
-from .journal_writer import get_journal_writer
+from .storage import get_journal_writer
 from . import converters
 
 # Max block size of contents to return
