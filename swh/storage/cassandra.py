@@ -11,6 +11,7 @@ import re
 import uuid
 import warnings
 
+import attr
 from cassandra import WriteFailure, WriteTimeout, ReadFailure, ReadTimeout
 from cassandra.cluster import Cluster
 from cassandra.policies import RoundRobinPolicy, TokenAwarePolicy
@@ -247,32 +248,44 @@ def revision_to_db(revision):
         }
 
     revision = Revision.from_dict(revision)
-    revision.type = revision.type.value
-    revision.metadata = json.dumps(revision.metadata)
+    revision = attr.evolve(
+        revision,
+        type=revision.type.value,
+        metadata=json.dumps(revision.metadata),
+    )
 
     return revision
 
 
 def revision_from_db(rev):
-    rev.type = RevisionType(rev.type)
     metadata = json.loads(rev.metadata)
     if metadata and 'extra_headers' in metadata:
         extra_headers = converters.db_to_git_headers(
             metadata['extra_headers'])
         metadata['extra_headers'] = extra_headers
-    rev.metadata = metadata
+    rev = attr.evolve(
+        rev,
+        type=RevisionType(rev.type),
+        metadata=metadata,
+    )
 
     return rev
 
 
 def release_to_db(release):
     release = Release.from_dict(release)
-    release.target_type = release.target_type.value
+    release = attr.evolve(
+        release,
+        target_type=release.target_type.value,
+    )
     return release
 
 
 def release_from_db(release):
-    release.target_type = ObjectType(release.target_type)
+    release = attr.evolve(
+        release,
+        target_type=ObjectType(release.target_type),
+    )
     return release
 
 
