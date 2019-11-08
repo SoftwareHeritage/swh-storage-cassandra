@@ -23,8 +23,12 @@ from swh.model.model import (
 )
 from swh.objstorage import get_objstorage
 from swh.objstorage.exc import ObjNotFoundError
+try:
+    from swh.journal.writer import get_journal_writer
+except ImportError:
+    get_journal_writer = None  # type: ignore
+    # mypy limitation, see https://github.com/python/mypy/issues/1153
 
-from .storage import get_journal_writer
 from . import converters
 
 # Max block size of contents to return

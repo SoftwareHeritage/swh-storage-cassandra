@@ -5,11 +5,6 @@
 
 import warnings
 
-from . import storage
-
-Storage = storage.Storage
-
-
 class HashCollision(Exception):
     pass
 
