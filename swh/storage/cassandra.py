@@ -136,9 +136,9 @@ CREATE TABLE IF NOT EXISTS directory (
 CREATE TABLE IF NOT EXISTS directory_entry (
     directory_id    blob,
     name            blob,  -- path name, relative to containing dir
-    target          blob,  -- id of target revision
+    target          blob,
     perms           int,   -- unix-like permissions
-    type            ascii,
+    type            ascii, -- target type
     PRIMARY KEY ((directory_id), name)
 );
 
