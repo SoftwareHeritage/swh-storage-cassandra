@@ -213,6 +213,10 @@ class TestCassandraStorage(_TestStorage):
 
 class TestCassandraStorageGeneratedData(_TestStorageGeneratedData):
     @pytest.mark.skip('Not supported by Cassandra')
+    def test_origin_count(self):
+        pass
+
+    @pytest.mark.skip('Not supported by Cassandra')
     def test_origin_get_range(self):
         pass
 
