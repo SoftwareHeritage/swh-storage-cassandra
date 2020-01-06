@@ -737,15 +737,13 @@ class CassandraStorage:
         return self.content_missing([{'sha1': c for c in contents}])
 
     def directory_add(self, directories):
+        missing = self.directory_missing([dir_['id'] for dir_ in directories])
+        directories = [dir_ for dir_ in directories if dir_['id'] in missing]
+
         if self.journal_writer:
             self.journal_writer.write_additions('directory', directories)
 
-        missing = self.directory_missing([dir_['id'] for dir_ in directories])
-
         for directory in directories:
-            if directory['id'] not in missing:
-                continue
-
             directory = Directory.from_dict(directory)
 
             for entry in directory.entries:
@@ -834,11 +832,12 @@ class CassandraStorage:
         yield from self._directory_ls(directory, recursive)
 
     def revision_add(self, revisions, check_missing=True):
-        if self.journal_writer:
-            self.journal_writer.write_additions('revision', revisions)
-
         if check_missing:
             missing = self.revision_missing([rev['id'] for rev in revisions])
+            revisions = [rev for rev in revisions if rev['id'] in missing]
+
+        if self.journal_writer:
+            self.journal_writer.write_additions('revision', revisions)
 
         for revision in revisions:
             if check_missing and revision['id'] not in missing:
@@ -922,16 +921,14 @@ class CassandraStorage:
         yield from self._get_parent_revs(revisions, seen, limit, True)
 
     def release_add(self, releases):
+        missing = self.release_missing([rel['id'] for rel in releases])
+        releases = [rel for rel in releases if rel['id'] in missing]
+
         if self.journal_writer:
             self.journal_writer.write_additions('release', releases)
 
-        missing = self.release_missing([rel['id'] for rel in releases])
-
         for release in releases:
             release = release_to_db(release)
-
-            if release.id not in missing:
-                continue
 
             if release:
                 self._proxy.release_add_one(release)
@@ -1039,9 +1036,6 @@ class CassandraStorage:
             new_branches_filtered = new_branches
 
             if target_types:
-                print(target_types)
-                print([branch.target_type for branch in branches])
-                print(branches)
                 new_branches_filtered = [
                     branch for branch in new_branches_filtered
                     if branch.target is not None
