@@ -108,12 +108,19 @@ CREATE TABLE IF NOT EXISTS revision (
     message                         blob,
     author                          person,
     committer                       person,
-    parents                         frozen<list<blob>>,
     synthetic                       boolean,
         -- true iff revision has been created by Software Heritage
     metadata                        text
         -- extra metadata as JSON(tarball checksums,
         -- extra commit information, etc...)
+);
+
+CREATE TABLE IF NOT EXISTS revision_parent (
+    id                     blob,
+    parent_rank                     int,
+        -- parent position in merge commits, 0-based
+    parent_id                       blob,
+    PRIMARY KEY ((id), parent_rank)
 );
 
 CREATE TABLE IF NOT EXISTS release
@@ -388,9 +395,17 @@ class CassandraProxy:
             algo=algo)
         return list(self.execute_and_retry(query, [hash_]))
 
+    _revision_parent_keys = ['id', 'parent_rank', 'parent_id']
+
+    @prepared_insert_statement('revision_parent', _revision_parent_keys)
+    def revision_parent_add_one(
+            self, id_, parent_rank, parent_id, *, statement):
+        return self.execute_and_retry(
+            statement, [id_, parent_rank, parent_id])
+
     _revision_keys = [
         'id', 'date', 'committer_date', 'type', 'directory', 'message',
-        'author', 'committer', 'parents',
+        'author', 'committer',
         'synthetic', 'metadata']
 
     @prepared_insert_statement('revision', _revision_keys)
@@ -846,6 +861,13 @@ class CassandraStorage:
             revision = revision_to_db(revision)
 
             if revision:
+                for (rank, parent) in enumerate(revision.parents):
+                    self._proxy.revision_parent_add_one(
+                        revision.id, rank, parent)
+
+                # Write this after all parents were written ensures that read
+                # endpoints don't return a partial view while writing the
+                # parents
                 self._proxy.revision_add_one(revision)
 
         if check_missing:
@@ -863,7 +885,19 @@ class CassandraStorage:
             revisions)
         revs = {}
         for row in rows:
-            rev = Revision(**row._asdict())
+            # TODO: use a single query to get all parents?
+            # (it might have less latency, but requires less code and more
+            # bandwidth (because revision id would be part of each returned
+            # row)
+            parent_rows = self._proxy.execute_and_retry(
+                'SELECT parent_id FROM revision_parent WHERE id = %s',
+                [row.id])
+            # parent_rank is the clustering key, so results are already
+            # sorted by rank.
+            parents = [row.parent_id for row in parent_rows]
+
+            rev = Revision(**row._asdict(), parents=parents)
+
             rev = revision_from_db(rev)
             revs[rev.id] = rev.to_dict()
 
@@ -877,18 +911,33 @@ class CassandraStorage:
         if not rev_ids:
             return
         seen |= set(rev_ids)
+
+        # We need this query, even if short=True, to return consistent
+        # results (ie. not return only a subset of a revision's parents
+        # if it is being written)
         rows = self._proxy.execute_and_retry(
             'SELECT {} FROM revision WHERE id IN ({})'.format(
-                'id, parents' if short else '*',
+                'id' if short else '*',
                 ', '.join('%s' for _ in rev_ids)),
             rev_ids)
+
         for row in rows:
+            # TODO: use a single query to get all parents?
+            # (it might have less latency, but requires less code and more
+            # bandwidth (because revision id would be part of each returned
+            # row)
+            parent_rows = self._proxy.execute_and_retry(
+                'SELECT parent_id FROM revision_parent WHERE id = %s',
+                [row.id])
+            # parent_rank is the clustering key, so results are already
+            # sorted by rank.
+            parents = [row.parent_id for row in parent_rows]
+
             if short:
-                (id_, parents) = row
-                yield (id_, parents)
+                yield (row.id, parents)
             else:
-                rev = revision_from_db(Revision(**row._asdict()))
-                parents = rev.parents
+                rev = revision_from_db(Revision(
+                    **row._asdict(), parents=parents))
                 yield rev.to_dict()
             yield from self._get_parent_revs(parents, seen, limit, short)
 
