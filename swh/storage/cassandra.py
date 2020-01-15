@@ -19,7 +19,7 @@ import dateutil
 
 from swh.model.model import (
     TimestampWithTimezone, Timestamp, Person, RevisionType, ObjectType,
-    Revision, Release, Directory, DirectoryEntry,
+    Revision, Release, Directory, DirectoryEntry, Content
 )
 from swh.objstorage import get_objstorage
 from swh.objstorage.exc import ObjNotFoundError
@@ -373,8 +373,7 @@ class CassandraProxy:
 
     @prepared_insert_statement('content', _content_keys)
     def content_add_one(self, content, *, statement):
-        self.execute_and_retry(
-            statement, [content[key] for key in self._content_keys])
+        self._add_one(statement, 'content', content, self._content_keys)
         self.increment_counter('content', 1)
 
     def content_index_add_one(self, main_algo, content):
@@ -382,13 +381,13 @@ class CassandraProxy:
             .format(algo=main_algo, cols=', '.join(self._content_pk),
                     values=', '.join('%s' for _ in self._content_pk))
         self.execute_and_retry(
-            query, [content[algo] for algo in self._content_pk])
+            query, [content.get_hash(algo) for algo in self._content_pk])
 
     @prepared_statement('SELECT * FROM content WHERE ' +
                         ' AND '.join(map('%s = ?'.__mod__, HASH_ALGORITHMS)))
-    def content_get_from_pk(self, content, *, statement):
+    def content_get_from_pk(self, content_hashes, *, statement):
         rows = list(self.execute_and_retry(
-            statement, [content[algo] for algo in HASH_ALGORITHMS]))
+            statement, [content_hashes[algo] for algo in HASH_ALGORITHMS]))
         assert len(rows) <= 1
         if rows:
             return rows[0]
@@ -615,10 +614,11 @@ class CassandraStorage:
         return [id_ for id_ in ids if id_ not in found_ids]
 
     def _content_add(self, contents, with_data):
+        contents = [Content.from_dict(c) for c in contents]
         if self.journal_writer:
             for content in contents:
+                content = content.to_dict()
                 if 'data' in content:
-                    content = content.copy()
                     del content['data']
                 self.journal_writer.write_addition('content', content)
 
@@ -627,7 +627,7 @@ class CassandraStorage:
         count_content_bytes_added = 0
 
         for content in contents:
-            if self._proxy.content_get_from_pk(content):
+            if self._proxy.content_get_from_pk(content.to_dict()):
                 # We already have it
                 continue
 
@@ -646,19 +646,19 @@ class CassandraStorage:
             # need to affect (len(HASH_ALGORITHMS)+1, which is currently 5)
             for algo in {'sha1', 'sha1_git'}:
                 pks = self._proxy.content_get_pks_from_single_hash(
-                    algo, content[algo])
+                    algo, content.get_hash(algo))
                 if len(pks) > 1:
                     # There are more than the one we just inserted.
                     from . import HashCollision
-                    raise HashCollision(algo, content[algo], pks)
+                    raise HashCollision(algo, content.get_hash(algo), pks)
 
             count_contents += 1
-            if content['status'] == 'visible':
+            if content.status == 'visible':
                 count_content_added += 1
                 if with_data:
-                    content_data = content['data']
+                    content_data = content.data
                     count_content_bytes_added += len(content_data)
-                    self.objstorage.add(content_data, content['sha1'])
+                    self.objstorage.add(content_data, content.sha1)
 
         summary = {
             'content:add': count_content_added,
