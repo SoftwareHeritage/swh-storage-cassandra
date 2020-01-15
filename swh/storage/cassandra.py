@@ -13,7 +13,8 @@ import warnings
 
 import attr
 from cassandra import WriteFailure, WriteTimeout, ReadFailure, ReadTimeout
-from cassandra.cluster import Cluster
+from cassandra.cluster import Cluster, EXEC_PROFILE_DEFAULT, ExecutionProfile
+from cassandra.policies import DCAwareRoundRobinPolicy, TokenAwarePolicy
 import dateutil
 
 from swh.model.model import (
@@ -228,8 +229,15 @@ for main_algo in HASH_ALGORITHMS:
     ))
 
 
+execution_profiles = {
+    EXEC_PROFILE_DEFAULT: ExecutionProfile(
+        load_balancing_policy=TokenAwarePolicy(DCAwareRoundRobinPolicy())),
+}
+
+
 def create_keyspace(hosts, keyspace, port=9042):
-    cluster = Cluster(hosts, port=port)
+    cluster = Cluster(
+        hosts, port=port, execution_profiles=execution_profiles)
     session = cluster.connect()
     session.execute('''CREATE KEYSPACE IF NOT EXISTS "%s"
                        WITH REPLICATION = {
@@ -321,7 +329,8 @@ def prepared_insert_statement(table_name, keys):
 
 class CassandraProxy:
     def __init__(self, hosts, keyspace, port):
-        self._cluster = Cluster(hosts, port=port)
+        self._cluster = Cluster(
+            hosts, port=port, execution_profiles=execution_profiles)
         self._session = self._cluster.connect(keyspace)
         self._cluster.register_user_type(
             keyspace, 'microtimestamp_with_timezone', TimestampWithTimezone)
