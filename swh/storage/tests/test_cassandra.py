@@ -111,11 +111,6 @@ def cassandra_cluster(tmpdir_factory):
     os.killpg(pgrp, signal.SIGKILL)
 
 
-@pytest.fixture(scope='session')
-def class_cassandra_cluster(request, cassandra_cluster):
-    request.cls.cassandra_cluster = cassandra_cluster
-
-
 class RequestHandler:
     def on_request(self, rf):
         if hasattr(rf.message, 'query'):
@@ -134,17 +129,18 @@ def swh_storage(cassandra_cluster):
 
     create_keyspace(hosts, keyspace, port)
 
-    storage = get_storage('cassandra', {
-        'hosts': hosts, 'port': port,
-        'keyspace': keyspace,
-        'journal_writer': {
+    storage = get_storage(
+        'cassandra',
+        hosts=hosts, port=port,
+        keyspace=keyspace,
+        journal_writer={
             'cls': 'memory',
         },
-        'objstorage': {
+        objstorage={
             'cls': 'memory',
             'args': {},
         },
-    })
+    )
 
     yield storage
 
