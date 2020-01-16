@@ -405,7 +405,6 @@ class CassandraProxy:
     @prepared_insert_statement('content', _content_keys)
     def content_add_one(self, content, *, statement):
         self._add_one(statement, 'content', content, self._content_keys)
-        self.increment_counter('content', 1)
 
     def content_index_add_one(self, main_algo, content):
         query = 'INSERT INTO content_by_{algo} ({cols}) VALUES ({values})' \
