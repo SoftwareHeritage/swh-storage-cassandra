@@ -540,6 +540,12 @@ class CassandraProxy:
     def origin_get_by_url(self, url):
         return self.origin_get_by_sha1(hash_url(url))
 
+    @prepared_statement(f'SELECT token(sha1) AS tok, {", ".join(origin_keys)} '
+                        f'FROM origin WHERE token(sha1) >= ? LIMIT ?')
+    def origin_list(self, start_token, limit, *, statement):
+        return self.execute_and_retry(
+            statement, [start_token, limit])
+
     @prepared_statement('SELECT next_visit_id FROM origin WHERE sha1 = ?')
     def _origin_get_next_visit_id(self, origin_sha1, *, statement):
         rows = list(self.execute_and_retry(statement, [origin_sha1]))
@@ -1292,6 +1298,27 @@ class CassandraStorage:
             else:
                 results.append(None)
         return results
+
+    def origin_list(self, page_token: Optional[str] = None, limit: int = 100
+                    ) -> dict:
+        start_token = TOKEN_BEGIN
+        if page_token:
+            start_token = int(page_token)
+            if not (TOKEN_BEGIN <= start_token <= TOKEN_END):
+                raise ValueError('Invalid page_token.')
+
+        rows = self._proxy.origin_list(start_token, limit)
+        rows = list(rows)
+
+        if len(rows) == limit:
+            next_page_token: Optional[str] = str(rows[-1].tok+1)
+        else:
+            next_page_token = None
+
+        return {
+            'origins': [{'url': row.url} for row in rows],
+            'next_page_token': next_page_token,
+        }
 
     def origin_search(self, url_pattern, offset=0, limit=50,
                       regexp=False, with_visit=False):
