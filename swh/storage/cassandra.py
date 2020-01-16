@@ -805,8 +805,9 @@ class CassandraStorage:
             'next_page_token': next_page_token,
         }
 
-    def content_get_metadata(self, content):
-        for sha1 in content:
+    def content_get_metadata(self, contents):
+        result = {sha1: [] for sha1 in contents}
+        for sha1 in contents:
             pks = self._proxy.content_get_pks_from_single_hash('sha1', sha1)
             if pks:
                 # TODO: what to do if there are more than one?
@@ -817,17 +818,8 @@ class CassandraStorage:
                 if res:
                     content_metadata = res._asdict()
                     content_metadata.pop('ctime')
-                    yield content_metadata
-            else:
-                # FIXME: should really be None
-                yield {
-                    'sha1': sha1,
-                    'sha1_git': None,
-                    'sha256': None,
-                    'blake2s256': None,
-                    'length': None,
-                    'status': None,
-                }
+                    result[content_metadata['sha1']].append(content_metadata)
+        return result
 
     def content_find(self, content):
         filter_algos = list(set(content).intersection(HASH_ALGORITHMS))
