@@ -699,6 +699,11 @@ class CassandraStorage:
 
     def _content_add(self, contents, with_data):
         contents = [Content.from_dict(c) for c in contents]
+
+        # Filter-out content already in the database.
+        contents = [c for c in contents
+                    if not self._proxy.content_get_from_pk(c.to_dict())]
+
         if self.journal_writer:
             for content in contents:
                 content = content.to_dict()
@@ -711,10 +716,6 @@ class CassandraStorage:
         count_content_bytes_added = 0
 
         for content in contents:
-            if self._proxy.content_get_from_pk(content.to_dict()):
-                # We already have it
-                continue
-
             for algo in HASH_ALGORITHMS:
                 self._proxy.content_index_add_one(algo, content)
 
