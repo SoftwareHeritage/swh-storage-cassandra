@@ -10,19 +10,24 @@ import json
 import logging
 import random
 import re
-from typing import Any, Dict, Optional
+from typing import (
+    Any, Callable, Dict, Generator, Iterable, List, Optional, TypeVar
+)
 import uuid
 import warnings
 
 import attr
 from cassandra import WriteFailure, WriteTimeout, ReadFailure, ReadTimeout
-from cassandra.cluster import Cluster, EXEC_PROFILE_DEFAULT, ExecutionProfile
+from cassandra.cluster import (
+    Cluster, EXEC_PROFILE_DEFAULT, ExecutionProfile, ResultSet)
 from cassandra.policies import DCAwareRoundRobinPolicy, TokenAwarePolicy
+from cassandra.query import PreparedStatement
 import dateutil
 
 from swh.model.model import (
     TimestampWithTimezone, Timestamp, Person, RevisionType, ObjectType,
-    Revision, Release, Directory, DirectoryEntry, Content, OriginVisit
+    Revision, Release, Directory, DirectoryEntry, Content, OriginVisit,
+    Sha1Git
 )
 from swh.objstorage import get_objstorage
 from swh.objstorage.exc import ObjNotFoundError
@@ -33,6 +38,10 @@ except ImportError:
     # mypy limitation, see https://github.com/python/mypy/issues/1153
 
 from . import converters
+
+
+Row = tuple
+
 
 # Max block size of contents to return
 BULK_BLOCK_CONTENT_LEN_MAX = 10000
@@ -253,7 +262,7 @@ def now():
     return datetime.datetime.now(tz=datetime.timezone.utc)
 
 
-def create_keyspace(hosts, keyspace, port=9042):
+def create_keyspace(hosts: List[str], keyspace: str, port: int = 9042):
     cluster = Cluster(
         hosts, port=port, execution_profiles=execution_profiles)
     session = cluster.connect()
@@ -268,7 +277,7 @@ def create_keyspace(hosts, keyspace, port=9042):
         session.execute(query)
 
 
-def revision_to_db(revision):
+def revision_to_db(revision: Dict[str, Any]) -> Revision:
     metadata = revision.get('metadata')
     if metadata and 'extra_headers' in metadata:
         extra_headers = converters.git_headers_to_db(
@@ -281,41 +290,41 @@ def revision_to_db(revision):
             }
         }
 
-    revision = Revision.from_dict(revision)
-    revision = attr.evolve(
-        revision,
-        type=revision.type.value,
-        metadata=json.dumps(revision.metadata),
+    rev = Revision.from_dict(revision)
+    rev = attr.evolve(
+        rev,
+        type=rev.type.value,
+        metadata=json.dumps(rev.metadata),
     )
 
-    return revision
+    return rev
 
 
-def revision_from_db(rev):
-    metadata = json.loads(rev.metadata)
+def revision_from_db(revision) -> Revision:
+    metadata = json.loads(revision.metadata)
     if metadata and 'extra_headers' in metadata:
         extra_headers = converters.db_to_git_headers(
             metadata['extra_headers'])
         metadata['extra_headers'] = extra_headers
     rev = attr.evolve(
-        rev,
-        type=RevisionType(rev.type),
+        revision,
+        type=RevisionType(revision.type),
         metadata=metadata,
     )
 
     return rev
 
 
-def release_to_db(release):
-    release = Release.from_dict(release)
-    release = attr.evolve(
-        release,
-        target_type=release.target_type.value,
+def release_to_db(release: Dict[str, Any]) -> Release:
+    rel = Release.from_dict(release)
+    rel = attr.evolve(
+        rel,
+        target_type=rel.target_type.value,
     )
-    return release
+    return rel
 
 
-def release_from_db(release):
+def release_from_db(release: Release) -> Release:
     release = attr.evolve(
         release,
         target_type=ObjectType(release.target_type),
@@ -323,30 +332,42 @@ def release_from_db(release):
     return release
 
 
-def prepared_statement(query):
+T = TypeVar('T')
+
+
+def prepared_statement(
+        query: str) -> Callable[[Callable[..., T]], Callable[..., T]]:
+    """Returns a decorator usable on methods of CassandraProxy, to
+    inject them with a 'statement' argument, that is a prepared
+    statement corresponding to the query.
+
+    This only works on methods of CassandraProxy, as preparing a
+    statement requires a connection to a Cassandra server."""
     def decorator(f):
         @functools.wraps(f)
-        def newf(self, *args, **kwargs):
+        def newf(self, *args, **kwargs) -> T:
             if f.__name__ not in self._prepared_statements:
-                self._prepared_statements[f.__name__] = \
-                    self._session.prepare(query)
+                statement: PreparedStatement = self._session.prepare(query)
+                self._prepared_statements[f.__name__] = statement
             return f(self, *args, **kwargs,
                      statement=self._prepared_statements[f.__name__])
         return newf
     return decorator
 
 
-def prepared_insert_statement(table_name, keys):
+def prepared_insert_statement(table_name: str, columns: List[str]):
+    """Shorthand for using `prepared_statement` for `INSERT INTO`
+    statements."""
     return prepared_statement(
         'INSERT INTO %s (%s) VALUES (%s)' % (
             table_name,
-            ', '.join(keys), ', '.join('?' for _ in keys),
+            ', '.join(columns), ', '.join('?' for _ in columns),
         )
     )
 
 
 class CassandraProxy:
-    def __init__(self, hosts, keyspace, port):
+    def __init__(self, hosts: List[str], keyspace: str, port: int):
         self._cluster = Cluster(
             hosts, port=port, execution_profiles=execution_profiles)
         self._session = self._cluster.connect(keyspace)
@@ -357,11 +378,11 @@ class CassandraProxy:
         self._cluster.register_user_type(
             keyspace, 'person', Person)
 
-        self._prepared_statements = {}
+        self._prepared_statements: Dict[str, PreparedStatement] = {}
 
     MAX_RETRIES = 3
 
-    def execute_and_retry(self, statement, args):
+    def execute_and_retry(self, statement, args) -> ResultSet:
         for nb_retries in range(self.MAX_RETRIES):
             try:
                 return self._session.execute(statement, args, timeout=100.)
@@ -376,15 +397,19 @@ class CassandraProxy:
 
     @prepared_statement('UPDATE object_count SET count = count + ? '
                         'WHERE partition_key = 0 AND object_type = ?')
-    def increment_counter(self, object_type, nb, *, statement):
+    def increment_counter(
+            self, object_type: str, nb: int, *, statement: PreparedStatement
+            ) -> None:
         self.execute_and_retry(statement, [nb, object_type])
 
-    def _add_one(self, statement, object_type, obj, keys):
+    def _add_one(
+            self, statement, object_type: str, obj, keys: List[str]
+            ) -> None:
         self.increment_counter(object_type, 1)
-        return self.execute_and_retry(
+        self.execute_and_retry(
             statement, [getattr(obj, key) for key in keys])
 
-    def _get_random_row(self, statement):
+    def _get_random_row(self, statement) -> Optional[Row]:
         '''Takes a prepared stement of the form
         "SELECT * FROM <table> WHERE token(<keys>) > ? LIMIT 1"
         and uses it to return a random row'''
@@ -396,6 +421,8 @@ class CassandraProxy:
             rows = self.execute_and_retry(statement, [TOKEN_BEGIN])
         if rows:
             return rows.one()
+        else:
+            return None
 
     _content_pk = ['sha1', 'sha1_git', 'sha256', 'blake2s256']
     _content_keys = [
@@ -403,10 +430,10 @@ class CassandraProxy:
         'ctime', 'status']
 
     @prepared_insert_statement('content', _content_keys)
-    def content_add_one(self, content, *, statement):
+    def content_add_one(self, content, *, statement) -> None:
         self._add_one(statement, 'content', content, self._content_keys)
 
-    def content_index_add_one(self, main_algo, content):
+    def content_index_add_one(self, main_algo: str, content: Content) -> None:
         query = 'INSERT INTO content_by_{algo} ({cols}) VALUES ({values})' \
             .format(algo=main_algo, cols=', '.join(self._content_pk),
                     values=', '.join('%s' for _ in self._content_pk))
@@ -415,26 +442,32 @@ class CassandraProxy:
 
     @prepared_statement('SELECT * FROM content WHERE ' +
                         ' AND '.join(map('%s = ?'.__mod__, HASH_ALGORITHMS)))
-    def content_get_from_pk(self, content_hashes, *, statement):
+    def content_get_from_pk(
+            self, content_hashes: Dict[str, bytes], *, statement
+            ) -> Optional[Row]:
         rows = list(self.execute_and_retry(
             statement, [content_hashes[algo] for algo in HASH_ALGORITHMS]))
         assert len(rows) <= 1
         if rows:
             return rows[0]
+        else:
+            return None
 
     @prepared_statement('SELECT * FROM content WHERE token(%s) > ? LIMIT 1'
                         % ', '.join(_content_pk))
-    def content_get_random(self, *, statement):
+    def content_get_random(self, *, statement) -> Optional[Row]:
         return self._get_random_row(statement)
 
     @prepared_statement(('SELECT token({0}) AS tok, {1} FROM content '
                          'WHERE token({0}) >= ? AND token({0}) <= ? LIMIT ?')
                         .format(', '.join(_content_pk),
                                 ', '.join(_content_keys)))
-    def content_get_token_range(self, start, end, limit, *, statement):
+    def content_get_token_range(
+            self, start: int, end: int, limit: int, *, statement) -> Row:
         return self.execute_and_retry(statement, [start, end, limit])
 
-    def content_get_pks_from_single_hash(self, algo, hash_):
+    def content_get_pks_from_single_hash(
+            self, algo: str, hash_: bytes) -> List[Row]:
         assert algo in HASH_ALGORITHMS
         query = 'SELECT * FROM content_by_{algo} WHERE {algo} = %s'.format(
             algo=algo)
@@ -444,8 +477,9 @@ class CassandraProxy:
 
     @prepared_insert_statement('revision_parent', _revision_parent_keys)
     def revision_parent_add_one(
-            self, id_, parent_rank, parent_id, *, statement):
-        return self.execute_and_retry(
+            self, id_: Sha1Git, parent_rank: int, parent_id: Sha1Git, *,
+            statement) -> None:
+        self.execute_and_retry(
             statement, [id_, parent_rank, parent_id])
 
     _revision_keys = [
@@ -454,11 +488,11 @@ class CassandraProxy:
         'synthetic', 'metadata']
 
     @prepared_insert_statement('revision', _revision_keys)
-    def revision_add_one(self, revision, *, statement):
+    def revision_add_one(self, revision: Dict[str, Any], *, statement) -> None:
         self._add_one(statement, 'revision', revision, self._revision_keys)
 
     @prepared_statement('SELECT * FROM revision WHERE token(id) > ? LIMIT 1')
-    def revision_get_random(self, *, statement):
+    def revision_get_random(self, *, statement) -> Optional[Row]:
         return self._get_random_row(statement)
 
     _release_keys = [
@@ -466,101 +500,111 @@ class CassandraProxy:
         'synthetic']
 
     @prepared_insert_statement('release', _release_keys)
-    def release_add_one(self, release, *, statement):
+    def release_add_one(self, release: Dict[str, Any], *, statement) -> None:
         self._add_one(statement, 'release', release, self._release_keys)
 
     @prepared_statement('SELECT * FROM release WHERE token(id) > ? LIMIT 1')
-    def release_get_random(self, *, statement):
+    def release_get_random(self, *, statement) -> Optional[Row]:
         return self._get_random_row(statement)
 
     _directory_keys = ['id']
 
     @prepared_insert_statement('directory', _directory_keys)
-    def directory_add_one(self, directory_id, *, statement):
+    def directory_add_one(self, directory_id: Sha1Git, *, statement) -> None:
+        """Called after all calls to directory_entry_add_one, to
+        commit/finalize the directory."""
         self.execute_and_retry(statement, [directory_id])
         self.increment_counter('directory', 1)
 
     _directory_entry_keys = ['directory_id', 'name', 'type', 'target', 'perms']
 
     @prepared_insert_statement('directory_entry', _directory_entry_keys)
-    def directory_entry_add_one(self, entry, *, statement):
+    def directory_entry_add_one(
+            self, entry: Dict[str, Any], *, statement) -> None:
         self.execute_and_retry(
             statement, [entry[key] for key in self._directory_entry_keys])
 
     @prepared_statement('SELECT * FROM directory WHERE token(id) > ? LIMIT 1')
-    def directory_get_random(self, *, statement):
+    def directory_get_random(self, *, statement) -> Optional[Row]:
         return self._get_random_row(statement)
 
     _snapshot_keys = ['id']
 
     @prepared_statement('SELECT id FROM snapshot WHERE id=? LIMIT 1')
-    def snapshot_exists(self, snapshot_id, *, statement):
+    def snapshot_exists(self, snapshot_id: Sha1Git, *, statement) -> bool:
         return len(list(self.execute_and_retry(statement, [snapshot_id]))) > 0
 
     @prepared_insert_statement('snapshot', _snapshot_keys)
-    def snapshot_add_one(self, snapshot_id, *, statement):
+    def snapshot_add_one(self, snapshot_id: Sha1Git, *, statement) -> None:
         self.execute_and_retry(statement, [snapshot_id])
         self.increment_counter('snapshot', 1)
 
     _snapshot_branch_keys = ['snapshot_id', 'name', 'target_type', 'target']
 
     @prepared_insert_statement('snapshot_branch', _snapshot_branch_keys)
-    def snapshot_branch_add_one(self, branch, *, statement):
-        return self.execute_and_retry(
+    def snapshot_branch_add_one(
+            self, branch: Dict[str, Any], *, statement) -> None:
+        self.execute_and_retry(
             statement, [branch[key] for key in self._snapshot_branch_keys])
 
     @prepared_statement('SELECT ascii_bins_count(target_type) AS counts '
                         'FROM snapshot_branch '
                         'WHERE snapshot_id = ? ')
-    def snapshot_count_branches(self, snapshot_id, *, statement):
+    def snapshot_count_branches(
+            self, snapshot_id: Sha1Git, *, statement) -> ResultSet:
         return self.execute_and_retry(statement, [snapshot_id])
 
     @prepared_statement('SELECT * FROM snapshot '
                         'WHERE id = ?')
-    def snapshot_get(self, snapshot_id, *, statement):
+    def snapshot_get(self, snapshot_id: Sha1Git, *, statement) -> ResultSet:
         return self.execute_and_retry(statement, [snapshot_id])
 
     @prepared_statement('SELECT * FROM snapshot_branch '
                         'WHERE snapshot_id = ? AND name >= ?'
                         'LIMIT ?')
-    def snapshot_branch_get(self, snapshot_id, from_, limit, *, statement):
+    def snapshot_branch_get(
+            self, snapshot_id: Sha1Git, from_: bytes, limit: int, *,
+            statement) -> None:
         return self.execute_and_retry(statement, [snapshot_id, from_, limit])
 
     @prepared_statement('SELECT * FROM snapshot WHERE token(id) > ? LIMIT 1')
-    def snapshot_get_random(self, *, statement):
+    def snapshot_get_random(self, *, statement) -> Optional[Row]:
         return self._get_random_row(statement)
 
     origin_keys = ['sha1', 'url', 'type', 'next_visit_id']
 
     @prepared_statement('INSERT INTO origin (sha1, url, next_visit_id) '
                         'VALUES (?, ?, 1) IF NOT EXISTS')
-    def origin_add_one(self, origin, *, statement):
+    def origin_add_one(self, origin: Dict[str, Any], *, statement) -> None:
         self.execute_and_retry(
             statement, [hash_url(origin['url']), origin['url']])
         self.increment_counter('origin', 1)
 
     @prepared_statement('SELECT * FROM origin WHERE sha1 = ?')
-    def origin_get_by_sha1(self, sha1, *, statement):
+    def origin_get_by_sha1(self, sha1: bytes, *, statement) -> ResultSet:
         return self.execute_and_retry(statement, [sha1])
 
-    def origin_get_by_url(self, url):
+    def origin_get_by_url(self, url: str) -> ResultSet:
         return self.origin_get_by_sha1(hash_url(url))
 
     @prepared_statement(f'SELECT token(sha1) AS tok, {", ".join(origin_keys)} '
                         f'FROM origin WHERE token(sha1) >= ? LIMIT ?')
-    def origin_list(self, start_token, limit, *, statement):
+    def origin_list(
+            self, start_token: int, limit: int, *, statement) -> ResultSet:
         return self.execute_and_retry(
             statement, [start_token, limit])
 
     @prepared_statement('SELECT next_visit_id FROM origin WHERE sha1 = ?')
-    def _origin_get_next_visit_id(self, origin_sha1, *, statement):
+    def _origin_get_next_visit_id(
+            self, origin_sha1: bytes, *, statement) -> int:
         rows = list(self.execute_and_retry(statement, [origin_sha1]))
         assert len(rows) == 1  # TODO: error handling
         return rows[0].next_visit_id
 
     @prepared_statement('UPDATE origin SET next_visit_id=? '
                         'WHERE sha1 = ? IF next_visit_id=?')
-    def origin_generate_unique_visit_id(self, origin_url, *, statement):
+    def origin_generate_unique_visit_id(
+            self, origin_url: str, *, statement) -> int:
         origin_sha1 = hash_url(origin_url)
         next_id = self._origin_get_next_visit_id(origin_sha1)
         while True:
@@ -583,7 +627,8 @@ class CassandraProxy:
         'type', 'date', 'status', 'metadata', 'snapshot']
 
     @prepared_insert_statement('origin_visit', _origin_visit_keys)
-    def origin_visit_add_one(self, visit, *, statement):
+    def origin_visit_add_one(
+            self, visit: Dict[str, Any], *, statement) -> None:
         self.execute_and_retry(
             statement, [visit[key] for key in self._origin_visit_keys])
         self.increment_counter('origin_visit', 1)
@@ -592,7 +637,8 @@ class CassandraProxy:
         'UPDATE origin_visit SET ' +
         ', '.join('%s = ?' % key for key in _origin_visit_update_keys) +
         ' WHERE origin = ? AND visit = ?')
-    def origin_visit_upsert(self, visit, *, statement):
+    def origin_visit_upsert(
+            self, visit: Dict[str, Any], *, statement) -> None:
         self.execute_and_retry(
             statement,
             [visit.get(key) for key in self._origin_visit_update_keys]
@@ -602,20 +648,26 @@ class CassandraProxy:
 
     @prepared_statement('SELECT * FROM origin_visit '
                         'WHERE origin = ? AND visit = ?')
-    def origin_visit_get_one(self, origin_url, visit_id, *, statement):
+    def origin_visit_get_one(
+            self, origin_url: str, visit_id: int, *,
+            statement) -> Optional[Row]:
         # TODO: error handling
-        return self.execute_and_retry(
-            statement, [origin_url, visit_id]).one()
+        rows = list(self.execute_and_retry(statement, [origin_url, visit_id]))
+        if rows:
+            return rows[0]
+        else:
+            return None
 
     @prepared_statement('SELECT * FROM origin_visit '
                         'WHERE origin = ?')
-    def origin_visit_get_all(self, origin_url, *, statement):
+    def origin_visit_get_all(self, origin_url: str, *, statement) -> ResultSet:
         return self.execute_and_retry(
             statement, [origin_url])
 
     @prepared_statement('SELECT * FROM origin_visit WHERE origin = ?')
     def origin_visit_get_latest(
-            self, origin, allowed_statuses, require_snapshot, *, statement):
+            self, origin: str, allowed_statuses: Optional[Iterable[str]],
+            require_snapshot: bool, *, statement) -> Optional[Row]:
         # TODO: do the ordering and filtering in Cassandra
         rows = list(self.execute_and_retry(statement, [origin]))
 
@@ -631,16 +683,21 @@ class CassandraProxy:
                     not self.snapshot_exists(row.snapshot):
                 raise ValueError('visit references unknown snapshot')
             return row
+        else:
+            return None
 
     @prepared_statement('SELECT * FROM origin_visit WHERE token(origin) >= ?')
-    def _origin_visit_iter_from(self, min_token, *, statement):
+    def _origin_visit_iter_from(
+            self, min_token: int, *, statement) -> Generator[Row, None, None]:
         yield from self.execute_and_retry(statement, [min_token])
 
     @prepared_statement('SELECT * FROM origin_visit WHERE token(origin) < ?')
-    def _origin_visit_iter_to(self, max_token, *, statement):
+    def _origin_visit_iter_to(
+            self, max_token: int, *, statement) -> Generator[Row, None, None]:
         yield from self.execute_and_retry(statement, [max_token])
 
-    def origin_visit_iter(self, start_token):
+    def origin_visit_iter(
+            self, start_token: int) -> Generator[Row, None, None]:
         """Returns all origin visits in order from this token,
         and wraps around the token space."""
         yield from self._origin_visit_iter_from(start_token)
@@ -649,12 +706,12 @@ class CassandraProxy:
     _tool_keys = ['id', 'name', 'version', 'configuration']
 
     @prepared_insert_statement('tool_by_uuid', _tool_keys)
-    def tool_by_uuid_add_one(self, tool, *, statement):
+    def tool_by_uuid_add_one(self, tool: Dict[str, Any], *, statement) -> None:
         self.execute_and_retry(
             statement, [tool[key] for key in self._tool_keys])
 
     @prepared_insert_statement('tool', _tool_keys)
-    def tool_add_one(self, tool, *, statement):
+    def tool_add_one(self, tool: Dict[str, Any], *, statement) -> None:
         self.execute_and_retry(
             statement, [tool[key] for key in self._tool_keys])
         self.increment_counter('tool', 1)
@@ -662,12 +719,16 @@ class CassandraProxy:
     @prepared_statement('SELECT id FROM tool '
                         'WHERE name = ? AND version = ? '
                         'AND configuration = ?')
-    def tool_get_one_uuid(self, name, version, configuration, *, statement):
+    def tool_get_one_uuid(
+            self, name: str, version: str, configuration: Dict[str, Any], *,
+            statement) -> Optional[str]:
         rows = list(self.execute_and_retry(
             statement, [name, version, configuration]))
         if rows:
             assert len(rows) == 1
             return rows[0].id
+        else:
+            return None
 
 
 class CassandraStorage:
@@ -824,7 +885,6 @@ class CassandraStorage:
     def content_find(self, content):
         filter_algos = list(set(content).intersection(HASH_ALGORITHMS))
         if not filter_algos:
-            print(content)
             raise ValueError('content keys must contain at least one of: '
                              '%s' % ', '.join(sorted(HASH_ALGORITHMS)))
         # Find all contents with one of the hash that matches
