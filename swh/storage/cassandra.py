@@ -738,7 +738,7 @@ class CassandraStorage:
                     raise HashCollision(algo, content.get_hash(algo), pks)
 
             count_contents += 1
-            if content.status == 'visible':
+            if content.status != 'absent':
                 count_content_added += 1
                 if with_data:
                     content_data = content.data
