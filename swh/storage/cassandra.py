@@ -491,6 +491,22 @@ class CassandraProxy:
     def revision_add_one(self, revision: Dict[str, Any], *, statement) -> None:
         self._add_one(statement, 'revision', revision, self._revision_keys)
 
+    @prepared_statement('SELECT id FROM revision WHERE id IN ?')
+    def revision_get_ids(self, revision_ids, *, statement) -> ResultSet:
+        return self.execute_and_retry(
+            statement, [revision_ids])
+
+    @prepared_statement('SELECT * FROM revision WHERE id IN ?')
+    def revision_get(self, revision_ids, *, statement) -> ResultSet:
+        return self.execute_and_retry(
+            statement, [revision_ids])
+
+    @prepared_statement('SELECT parent_id FROM revision_parent WHERE id = ?')
+    def revision_get_parents(
+            self, revision_id: Sha1Git, *, statement) -> ResultSet:
+        return self.execute_and_retry(
+            statement, [revision_id])
+
     @prepared_statement('SELECT * FROM revision WHERE token(id) > ? LIMIT 1')
     def revision_get_random(self, *, statement) -> Optional[Row]:
         return self._get_random_row(statement)
@@ -502,6 +518,10 @@ class CassandraProxy:
     @prepared_insert_statement('release', _release_keys)
     def release_add_one(self, release: Dict[str, Any], *, statement) -> None:
         self._add_one(statement, 'release', release, self._release_keys)
+
+    @prepared_statement('SELECT * FROM release WHERE id in ?')
+    def release_get(self, release_ids: List[str], *, statement) -> None:
+        return self.execute_and_retry(statement, [release_ids])
 
     @prepared_statement('SELECT * FROM release WHERE token(id) > ? LIMIT 1')
     def release_get_random(self, *, statement) -> Optional[Row]:
@@ -523,6 +543,12 @@ class CassandraProxy:
             self, entry: Dict[str, Any], *, statement) -> None:
         self.execute_and_retry(
             statement, [entry[key] for key in self._directory_entry_keys])
+
+    @prepared_statement('SELECT * FROM directory_entry '
+                        'WHERE directory_id IN ?')
+    def directory_entry_get(self, directory_ids, *, statement) -> ResultSet:
+        return self.execute_and_retry(
+            statement, [directory_ids])
 
     @prepared_statement('SELECT * FROM directory WHERE token(id) > ? LIMIT 1')
     def directory_get_random(self, *, statement) -> Optional[Row]:
@@ -729,6 +755,12 @@ class CassandraProxy:
             return rows[0].id
         else:
             return None
+
+    @prepared_statement('SELECT object_type, count FROM object_count '
+                        'WHERE partition_key=0')
+    def stat_counters(self, *, statement) -> ResultSet:
+        return self.execute_and_retry(
+            statement, [])
 
 
 class CassandraStorage:
@@ -968,9 +1000,7 @@ class CassandraStorage:
     def _directory_ls(self, directory_id, recursive, prefix=b''):
         if self.directory_missing([directory_id]):
             return
-        rows = list(self._proxy.execute_and_retry(
-            'SELECT * FROM directory_entry WHERE directory_id = %s',
-            (directory_id,)))
+        rows = list(self._proxy.directory_entry_get([directory_id]))
 
         for row in rows:
             entry = row._asdict()
@@ -1053,19 +1083,14 @@ class CassandraStorage:
         return self._missing('revision', revisions)
 
     def revision_get(self, revisions):
-        rows = self._proxy.execute_and_retry(
-            'SELECT * FROM revision WHERE id IN ({})'.format(
-                ', '.join('%s' for _ in revisions)),
-            revisions)
+        rows = self._proxy.revision_get(revisions)
         revs = {}
         for row in rows:
             # TODO: use a single query to get all parents?
             # (it might have less latency, but requires less code and more
             # bandwidth (because revision id would be part of each returned
             # row)
-            parent_rows = self._proxy.execute_and_retry(
-                'SELECT parent_id FROM revision_parent WHERE id = %s',
-                [row.id])
+            parent_rows = self._proxy.revision_get_parents(row.id)
             # parent_rank is the clustering key, so results are already
             # sorted by rank.
             parents = [row.parent_id for row in parent_rows]
@@ -1089,20 +1114,18 @@ class CassandraStorage:
         # We need this query, even if short=True, to return consistent
         # results (ie. not return only a subset of a revision's parents
         # if it is being written)
-        rows = self._proxy.execute_and_retry(
-            'SELECT {} FROM revision WHERE id IN ({})'.format(
-                'id' if short else '*',
-                ', '.join('%s' for _ in rev_ids)),
-            rev_ids)
+        if short:
+            rows = self._proxy.revision_get_ids(rev_ids)
+        else:
+            rows = self._proxy.revision_get(rev_ids)
 
         for row in rows:
             # TODO: use a single query to get all parents?
             # (it might have less latency, but requires less code and more
             # bandwidth (because revision id would be part of each returned
             # row)
-            parent_rows = self._proxy.execute_and_retry(
-                'SELECT parent_id FROM revision_parent WHERE id = %s',
-                [row.id])
+            parent_rows = self._proxy.revision_get_parents(row.id)
+
             # parent_rank is the clustering key, so results are already
             # sorted by rank.
             parents = [row.parent_id for row in parent_rows]
@@ -1165,10 +1188,7 @@ class CassandraStorage:
         return self._missing('release', releases)
 
     def release_get(self, releases):
-        rows = self._proxy.execute_and_retry(
-            'SELECT * FROM release WHERE id IN ({})'.format(
-                ', '.join('%s' for _ in releases)),
-            releases)
+        rows = self._proxy.release_get(releases)
         rels = {}
         for row in rows:
             release = Release(**row._asdict())
@@ -1647,9 +1667,7 @@ class CassandraStorage:
             return None
 
     def stat_counters(self):
-        rows = self._proxy.execute_and_retry(
-            'SELECT object_type, count FROM object_count '
-            'WHERE partition_key=0', [])
+        rows = self._proxy.stat_counters()
         keys = (
             'content', 'directory', 'origin', 'origin_visit',
             'release', 'revision', 'skipped_content', 'snapshot')
