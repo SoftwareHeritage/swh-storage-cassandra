@@ -9,6 +9,7 @@ import json
 import logging
 import random
 import re
+from typing import Any, Dict, Optional
 import uuid
 import warnings
 
@@ -240,6 +241,10 @@ execution_profiles = {
     EXEC_PROFILE_DEFAULT: ExecutionProfile(
         load_balancing_policy=TokenAwarePolicy(DCAwareRoundRobinPolicy())),
 }
+
+
+def now():
+    return datetime.datetime.now(tz=datetime.timezone.utc)
 
 
 def create_keyspace(hosts, keyspace, port=9042):
@@ -603,6 +608,20 @@ class CassandraProxy:
                 raise ValueError('visit references unknown snapshot')
             return row
 
+    @prepared_statement('SELECT * FROM origin_visit WHERE token(origin) >= ?')
+    def _origin_visit_iter_from(self, min_token, *, statement):
+        yield from self.execute_and_retry(statement, [min_token])
+
+    @prepared_statement('SELECT * FROM origin_visit WHERE token(origin) < ?')
+    def _origin_visit_iter_to(self, max_token, *, statement):
+        yield from self.execute_and_retry(statement, [max_token])
+
+    def origin_visit_iter(self, start_token):
+        """Returns all origin visits in order from this token,
+        and wraps around the token space."""
+        yield from self._origin_visit_iter_from(start_token)
+        yield from self._origin_visit_iter_to(start_token)
+
     _tool_keys = ['id', 'name', 'version', 'configuration']
 
     @prepared_insert_statement('tool_by_uuid', _tool_keys)
@@ -713,9 +732,8 @@ class CassandraStorage:
 
     def content_add(self, content):
         content = [dict(c.items()) for c in content]  # semi-shallow copy
-        now = datetime.datetime.now(tz=datetime.timezone.utc)
         for item in content:
-            item['ctime'] = now
+            item['ctime'] = now()
         return self._content_add(content, with_data=True)
 
     def content_add_metadata(self, content):
@@ -1447,6 +1465,20 @@ class CassandraStorage:
             require_snapshot=require_snapshot)
         if visit:
             return self._format_origin_visit_row(visit)
+
+    def origin_visit_get_random(self, type: str) -> Optional[Dict[str, Any]]:
+        back_in_the_day = now() - datetime.timedelta(weeks=12)  # 3 months back
+        start_token = random.randint(TOKEN_BEGIN, TOKEN_END)
+
+        # Iterator over all visits, ordered by origins then visit_id
+        rows = self._proxy.origin_visit_iter(start_token)
+        for row in rows:
+            visit = self._format_origin_visit_row(row)
+            if visit['date'] > back_in_the_day \
+                    and visit['status'] == 'full':
+                return visit
+        else:
+            return None
 
     def tool_add(self, tools):
         inserted = []
