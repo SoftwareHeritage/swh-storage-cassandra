@@ -5,6 +5,7 @@
 
 import datetime
 import functools
+import hashlib
 import json
 import logging
 import random
@@ -184,7 +185,8 @@ CREATE TABLE IF NOT EXISTS origin_visit (
 
 
 CREATE TABLE IF NOT EXISTS origin (
-    url             text PRIMARY KEY,
+    sha1            blob PRIMARY KEY,
+    url             text,
     type            text,
     next_visit_id   int,
         -- We need integer visit ids for compatibility with the pgsql
@@ -241,6 +243,10 @@ execution_profiles = {
     EXEC_PROFILE_DEFAULT: ExecutionProfile(
         load_balancing_policy=TokenAwarePolicy(DCAwareRoundRobinPolicy())),
 }
+
+
+def hash_url(url):
+    return hashlib.sha1(url.encode('ascii')).digest()
 
 
 def now():
@@ -518,30 +524,36 @@ class CassandraProxy:
     def snapshot_get_random(self, *, statement):
         return self._get_random_row(statement)
 
-    @prepared_statement('INSERT INTO origin (url, next_visit_id) '
-                        'VALUES (?, 1) IF NOT EXISTS')
+    origin_keys = ['sha1', 'url', 'type', 'next_visit_id']
+
+    @prepared_statement('INSERT INTO origin (sha1, url, next_visit_id) '
+                        'VALUES (?, ?, 1) IF NOT EXISTS')
     def origin_add_one(self, origin, *, statement):
         self.execute_and_retry(
-            statement, [origin['url']])
+            statement, [hash_url(origin['url']), origin['url']])
         self.increment_counter('origin', 1)
 
-    @prepared_statement('SELECT * FROM origin WHERE url = ?')
-    def origin_get_by_url(self, url, *, statement):
-        return self.execute_and_retry(statement, [url])
+    @prepared_statement('SELECT * FROM origin WHERE sha1 = ?')
+    def origin_get_by_sha1(self, sha1, *, statement):
+        return self.execute_and_retry(statement, [sha1])
 
-    @prepared_statement('SELECT next_visit_id FROM origin WHERE url = ?')
-    def _origin_get_next_visit_id(self, origin_url, *, statement):
-        rows = list(self.execute_and_retry(statement, [origin_url]))
+    def origin_get_by_url(self, url):
+        return self.origin_get_by_sha1(hash_url(url))
+
+    @prepared_statement('SELECT next_visit_id FROM origin WHERE sha1 = ?')
+    def _origin_get_next_visit_id(self, origin_sha1, *, statement):
+        rows = list(self.execute_and_retry(statement, [origin_sha1]))
         assert len(rows) == 1  # TODO: error handling
         return rows[0].next_visit_id
 
     @prepared_statement('UPDATE origin SET next_visit_id=? '
-                        'WHERE url = ? IF next_visit_id=?')
+                        'WHERE sha1 = ? IF next_visit_id=?')
     def origin_generate_unique_visit_id(self, origin_url, *, statement):
-        next_id = self._origin_get_next_visit_id(origin_url)
+        origin_sha1 = hash_url(origin_url)
+        next_id = self._origin_get_next_visit_id(origin_sha1)
         while True:
             res = list(self.execute_and_retry(
-                statement, [next_id+1, origin_url, next_id]))
+                statement, [next_id+1, origin_sha1, next_id]))
             assert len(res) == 1
             if res[0].applied:
                 # No data race
@@ -1270,6 +1282,16 @@ class CassandraStorage:
             }
         else:
             return None
+
+    def origin_get_by_sha1(self, sha1s):
+        results = []
+        for sha1 in sha1s:
+            rows = self._proxy.origin_get_by_sha1(sha1)
+            if rows:
+                results.append({'url': rows.one().url})
+            else:
+                results.append(None)
+        return results
 
     def origin_search(self, url_pattern, offset=0, limit=50,
                       regexp=False, with_visit=False):
