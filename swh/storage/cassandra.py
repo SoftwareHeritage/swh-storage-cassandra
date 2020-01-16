@@ -428,6 +428,13 @@ class CassandraProxy:
     def content_get_random(self, *, statement):
         return self._get_random_row(statement)
 
+    @prepared_statement(('SELECT token({0}) AS tok, {1} FROM content '
+                         'WHERE token({0}) >= ? AND token({0}) <= ? LIMIT ?')
+                        .format(', '.join(_content_pk),
+                                ', '.join(_content_keys)))
+    def content_get_token_range(self, start, end, limit, *, statement):
+        return self.execute_and_retry(statement, [start, end, limit])
+
     def content_get_pks_from_single_hash(self, algo, hash_):
         assert algo in HASH_ALGORITHMS
         query = 'SELECT * FROM content_by_{algo} WHERE {algo} = %s'.format(
@@ -769,6 +776,34 @@ class CassandraStorage:
                 continue
 
             yield {'sha1': obj_id, 'data': data}
+
+    def content_get_partition(
+            self, partition_id: int, nb_partitions: int, limit: int = 1000,
+            page_token: str = None):
+        if limit is None:
+            raise ValueError('Development error: limit should not be None')
+        partition_size = (TOKEN_END-TOKEN_BEGIN)//nb_partitions
+        range_start = TOKEN_BEGIN + partition_id*partition_size
+        range_end = TOKEN_BEGIN + (partition_id+1)*partition_size
+        if page_token is not None:
+            if not (range_start <= int(page_token) <= range_end):
+                raise ValueError('Invalid page_token.')
+            range_start = int(page_token)
+
+        rows = self._proxy.content_get_token_range(
+            range_start, range_end, limit)
+        rows = list(rows)
+
+        if len(rows) == limit:
+            next_page_token: Optional[str] = str(rows[-1].tok+1)
+        else:
+            next_page_token = None
+
+        return {
+            'contents': [row._asdict() for row in rows
+                         if row.status != 'absent'],
+            'next_page_token': next_page_token,
+        }
 
     def content_get_metadata(self, content):
         for sha1 in content:
