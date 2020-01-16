@@ -22,7 +22,7 @@ import dateutil
 
 from swh.model.model import (
     TimestampWithTimezone, Timestamp, Person, RevisionType, ObjectType,
-    Revision, Release, Directory, DirectoryEntry, Content
+    Revision, Release, Directory, DirectoryEntry, Content, OriginVisit
 )
 from swh.objstorage import get_objstorage
 from swh.objstorage.exc import ObjNotFoundError
@@ -1383,30 +1383,32 @@ class CassandraStorage:
                             metadata=None, snapshot=None):
         origin_url = origin  # TODO: rename the argument
 
-        visit = self._proxy.origin_visit_get_one(origin_url, visit_id)
-        if not visit:
+        row = self._proxy.origin_visit_get_one(origin_url, visit_id)
+        if not row:
             raise ValueError('This origin visit does not exist.')
+        visit = OriginVisit.from_dict(self._format_origin_visit_row(row))
 
-        if self.journal_writer:
-            self.journal_writer.write_update('origin_visit', {
-                'origin': origin_url, 'visit': visit_id,
-                'type': visit.type,
-                'status': status or visit.status,
-                'date': visit.date.replace(tzinfo=datetime.timezone.utc),
-                'metadata': metadata or visit.metadata,
-                'snapshot': snapshot or visit.snapshot})
+        updates = {}
+        if status:
+            updates['status'] = status
+        if metadata:
+            updates['metadata'] = metadata
+        if snapshot:
+            updates['snapshot'] = snapshot
 
         set_parts = []
         args = []
-        if status:
-            set_parts.append('status = %s')
-            args.append(status)
-        if metadata:
-            set_parts.append('metadata = %s')
-            args.append(json.dumps(metadata))
-        if snapshot:
-            set_parts.append('snapshot = %s')
-            args.append(snapshot)
+        for (column, value) in updates.items():
+            set_parts.append(f'{column} = %s')
+            if column == 'metadata':
+                args.append(json.dumps(value))
+            else:
+                args.append(value)
+
+        visit = attr.evolve(visit, **updates)
+
+        if self.journal_writer:
+            self.journal_writer.write_update('origin_visit', visit)
 
         if not set_parts:
             return
