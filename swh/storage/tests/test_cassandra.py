@@ -169,7 +169,7 @@ class TestCassandraStorage(_TestStorage):
     @pytest.mark.skip(
         'The "person" table of the pgsql is a legacy thing, and not '
         'supported by the cassandra backend.')
-    def test_person_get_fullname_unicity(self):
+    def test_person_fullname_unicity(self):
         pass
 
     @pytest.mark.skip(
@@ -217,6 +217,10 @@ class TestCassandraStorageGeneratedData(_TestStorageGeneratedData):
         pass
 
     @pytest.mark.skip('Not supported by Cassandra')
+    def test_origin_get_range_from_zero(self):
+        pass
+
+    @pytest.mark.skip('Not supported by Cassandra')
     def test_generate_content_get_range_limit(self):
         pass
 
@@ -238,4 +242,16 @@ class TestCassandraStorageGeneratedData(_TestStorageGeneratedData):
 
     @pytest.mark.skip('Not supported by Cassandra')
     def test_generate_content_get_range_full(self):
+        pass
+
+    @pytest.mark.skip('Not supported by Cassandra')
+    def test_origin_count_with_visit_no_visits(self):
+        pass
+
+    @pytest.mark.skip('Not supported by Cassandra')
+    def test_origin_count_with_visit_with_visits_and_snapshot(self):
+        pass
+
+    @pytest.mark.skip('Not supported by Cassandra')
+    def test_origin_count_with_visit_with_visits_no_snapshot(self):
         pass
