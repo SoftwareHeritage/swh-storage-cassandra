@@ -7,6 +7,7 @@ import datetime
 import functools
 import json
 import logging
+import random
 import re
 import uuid
 import warnings
@@ -33,6 +34,12 @@ from . import converters
 
 # Max block size of contents to return
 BULK_BLOCK_CONTENT_LEN_MAX = 10000
+
+
+TOKEN_BEGIN = -(2**63)
+'''Minimum value returned by the CQL function token()'''
+TOKEN_END = 2**63-1
+'''Maximum value returned by the CQL function token()'''
 
 
 logger = logging.getLogger(__name__)
@@ -366,6 +373,19 @@ class CassandraProxy:
         return self.execute_and_retry(
             statement, [getattr(obj, key) for key in keys])
 
+    def _get_random_row(self, statement):
+        '''Takes a prepared stement of the form
+        "SELECT * FROM <table> WHERE token(<keys>) > ? LIMIT 1"
+        and uses it to return a random row'''
+        token = random.randint(TOKEN_BEGIN, TOKEN_END)
+        rows = self.execute_and_retry(statement, [token])
+        if not rows:
+            # There are no row with a greater token; wrap around to get
+            # the row with the smallest token
+            rows = self.execute_and_retry(statement, [TOKEN_BEGIN])
+        if rows:
+            return rows.one()
+
     _content_pk = ['sha1', 'sha1_git', 'sha256', 'blake2s256']
     _content_keys = [
         'sha1', 'sha1_git', 'sha256', 'blake2s256', 'length',
@@ -392,6 +412,11 @@ class CassandraProxy:
         if rows:
             return rows[0]
 
+    @prepared_statement('SELECT * FROM content WHERE token(%s) > ? LIMIT 1'
+                        % ', '.join(_content_pk))
+    def content_get_random(self, *, statement):
+        return self._get_random_row(statement)
+
     def content_get_pks_from_single_hash(self, algo, hash_):
         assert algo in HASH_ALGORITHMS
         query = 'SELECT * FROM content_by_{algo} WHERE {algo} = %s'.format(
@@ -415,6 +440,10 @@ class CassandraProxy:
     def revision_add_one(self, revision, *, statement):
         self._add_one(statement, 'revision', revision, self._revision_keys)
 
+    @prepared_statement('SELECT * FROM revision WHERE token(id) > ? LIMIT 1')
+    def revision_get_random(self, *, statement):
+        return self._get_random_row(statement)
+
     _release_keys = [
         'id', 'target', 'target_type', 'date', 'name', 'message', 'author',
         'synthetic']
@@ -422,6 +451,10 @@ class CassandraProxy:
     @prepared_insert_statement('release', _release_keys)
     def release_add_one(self, release, *, statement):
         self._add_one(statement, 'release', release, self._release_keys)
+
+    @prepared_statement('SELECT * FROM release WHERE token(id) > ? LIMIT 1')
+    def release_get_random(self, *, statement):
+        return self._get_random_row(statement)
 
     _directory_keys = ['id']
 
@@ -436,6 +469,10 @@ class CassandraProxy:
     def directory_entry_add_one(self, entry, *, statement):
         self.execute_and_retry(
             statement, [entry[key] for key in self._directory_entry_keys])
+
+    @prepared_statement('SELECT * FROM directory WHERE token(id) > ? LIMIT 1')
+    def directory_get_random(self, *, statement):
+        return self._get_random_row(statement)
 
     _snapshot_keys = ['id']
 
@@ -471,6 +508,10 @@ class CassandraProxy:
                         'LIMIT ?')
     def snapshot_branch_get(self, snapshot_id, from_, limit, *, statement):
         return self.execute_and_retry(statement, [snapshot_id, from_, limit])
+
+    @prepared_statement('SELECT * FROM snapshot WHERE token(id) > ? LIMIT 1')
+    def snapshot_get_random(self, *, statement):
+        return self._get_random_row(statement)
 
     @prepared_statement('INSERT INTO origin (url, next_visit_id) '
                         'VALUES (?, 1) IF NOT EXISTS')
@@ -755,6 +796,9 @@ class CassandraStorage:
     def content_missing_per_sha1(self, contents):
         return self.content_missing([{'sha1': c for c in contents}])
 
+    def content_get_random(self):
+        return self._proxy.content_get_random().sha1_git
+
     def directory_add(self, directories):
         missing = self.directory_missing([dir_['id'] for dir_ in directories])
         directories = [dir_ for dir_ in directories if dir_['id'] in missing]
@@ -849,6 +893,9 @@ class CassandraStorage:
 
     def directory_ls(self, directory, recursive=False):
         yield from self._directory_ls(directory, recursive)
+
+    def directory_get_random(self):
+        return self._proxy.directory_get_random().id
 
     def revision_add(self, revisions, check_missing=True):
         if check_missing:
@@ -973,6 +1020,9 @@ class CassandraStorage:
         seen = set()
         yield from self._get_parent_revs(revisions, seen, limit, True)
 
+    def revision_get_random(self):
+        return self._proxy.revision_get_random().id
+
     def release_add(self, releases):
         missing = self.release_missing([rel['id'] for rel in releases])
         releases = [rel for rel in releases if rel['id'] in missing]
@@ -1004,6 +1054,9 @@ class CassandraStorage:
 
         for rel_id in releases:
             yield rels.get(rel_id)
+
+    def release_get_random(self):
+        return self._proxy.release_get_random().id
 
     def snapshot_add(self, snapshots, origin=None, visit=None):
         count = 0
@@ -1117,6 +1170,9 @@ class CassandraStorage:
             'branches': branches,
             'next_branch': last_branch,
         }
+
+    def snapshot_get_random(self):
+        return self._proxy.snapshot_get_random().id
 
     OBJECT_FIND_TYPES = ('revision', 'release', 'content', 'directory')
     # Mind the order, revision is the most likely one for a given ID,
