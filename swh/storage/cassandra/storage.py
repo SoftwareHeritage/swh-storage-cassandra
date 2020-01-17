@@ -360,7 +360,7 @@ class CassandraStorage:
             # (it might have less latency, but requires less code and more
             # bandwidth (because revision id would be part of each returned
             # row)
-            parent_rows = self._cql_runner.revision_get_parents(row.id)
+            parent_rows = self._cql_runner.revision_parent_get(row.id)
             # parent_rank is the clustering key, so results are already
             # sorted by rank.
             parents = [row.parent_id for row in parent_rows]
@@ -394,7 +394,7 @@ class CassandraStorage:
             # (it might have less latency, but requires less code and more
             # bandwidth (because revision id would be part of each returned
             # row)
-            parent_rows = self._cql_runner.revision_get_parents(row.id)
+            parent_rows = self._cql_runner.revision_parent_get(row.id)
 
             # parent_rank is the clustering key, so results are already
             # sorted by rank.

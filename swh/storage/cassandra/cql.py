@@ -103,9 +103,13 @@ class CqlRunner:
 
         self._prepared_statements: Dict[str, PreparedStatement] = {}
 
+    ##########################
+    # Common utility functions
+    ##########################
+
     MAX_RETRIES = 3
 
-    def execute_and_retry(self, statement, args) -> ResultSet:
+    def _execute_and_retry(self, statement, args) -> ResultSet:
         for nb_retries in range(self.MAX_RETRIES):
             try:
                 return self._session.execute(statement, args, timeout=100.)
@@ -120,16 +124,16 @@ class CqlRunner:
 
     @_prepared_statement('UPDATE object_count SET count = count + ? '
                          'WHERE partition_key = 0 AND object_type = ?')
-    def increment_counter(
+    def _increment_counter(
             self, object_type: str, nb: int, *, statement: PreparedStatement
             ) -> None:
-        self.execute_and_retry(statement, [nb, object_type])
+        self._execute_and_retry(statement, [nb, object_type])
 
     def _add_one(
             self, statement, object_type: str, obj, keys: List[str]
             ) -> None:
-        self.increment_counter(object_type, 1)
-        self.execute_and_retry(
+        self._increment_counter(object_type, 1)
+        self._execute_and_retry(
             statement, [getattr(obj, key) for key in keys])
 
     def _get_random_row(self, statement) -> Optional[Row]:
@@ -137,53 +141,36 @@ class CqlRunner:
         "SELECT * FROM <table> WHERE token(<keys>) > ? LIMIT 1"
         and uses it to return a random row'''
         token = random.randint(TOKEN_BEGIN, TOKEN_END)
-        rows = self.execute_and_retry(statement, [token])
+        rows = self._execute_and_retry(statement, [token])
         if not rows:
             # There are no row with a greater token; wrap around to get
             # the row with the smallest token
-            rows = self.execute_and_retry(statement, [TOKEN_BEGIN])
+            rows = self._execute_and_retry(statement, [TOKEN_BEGIN])
         if rows:
             return rows.one()
         else:
             return None
 
     def _missing(self, statement, ids):
-        res = self.execute_and_retry(statement, [ids])
+        res = self._execute_and_retry(statement, [ids])
         found_ids = {id_ for (id_,) in res}
         return [id_ for id_ in ids if id_ not in found_ids]
 
-    @_prepared_statement('SELECT uuid() FROM revision LIMIT 1;')
-    def check_read(self, *, statement):
-        self.execute_and_retry(statement, [])
+    ##########################
+    # 'content' table
+    ##########################
 
     _content_pk = ['sha1', 'sha1_git', 'sha256', 'blake2s256']
     _content_keys = [
         'sha1', 'sha1_git', 'sha256', 'blake2s256', 'length',
         'ctime', 'status']
 
-    @_prepared_statement('SELECT sha1_git FROM content_by_sha1_git '
-                         'WHERE sha1_git IN ?')
-    def content_missing_by_sha1_git(
-            self, ids: List[bytes], *, statement) -> List[bytes]:
-        return self._missing(statement, ids)
-
-    @_prepared_insert_statement('content', _content_keys)
-    def content_add_one(self, content, *, statement) -> None:
-        self._add_one(statement, 'content', content, self._content_keys)
-
-    def content_index_add_one(self, main_algo: str, content: Content) -> None:
-        query = 'INSERT INTO content_by_{algo} ({cols}) VALUES ({values})' \
-            .format(algo=main_algo, cols=', '.join(self._content_pk),
-                    values=', '.join('%s' for _ in self._content_pk))
-        self.execute_and_retry(
-            query, [content.get_hash(algo) for algo in self._content_pk])
-
     @_prepared_statement('SELECT * FROM content WHERE ' +
                          ' AND '.join(map('%s = ?'.__mod__, HASH_ALGORITHMS)))
     def content_get_from_pk(
             self, content_hashes: Dict[str, bytes], *, statement
             ) -> Optional[Row]:
-        rows = list(self.execute_and_retry(
+        rows = list(self._execute_and_retry(
             statement, [content_hashes[algo] for algo in HASH_ALGORITHMS]))
         assert len(rows) <= 1
         if rows:
@@ -202,32 +189,48 @@ class CqlRunner:
                                  ', '.join(_content_keys)))
     def content_get_token_range(
             self, start: int, end: int, limit: int, *, statement) -> Row:
-        return self.execute_and_retry(statement, [start, end, limit])
+        return self._execute_and_retry(statement, [start, end, limit])
+
+    ##########################
+    # 'content_by_*' tables
+    ##########################
+
+    @_prepared_statement('SELECT sha1_git FROM content_by_sha1_git '
+                         'WHERE sha1_git IN ?')
+    def content_missing_by_sha1_git(
+            self, ids: List[bytes], *, statement) -> List[bytes]:
+        return self._missing(statement, ids)
+
+    @_prepared_insert_statement('content', _content_keys)
+    def content_add_one(self, content, *, statement) -> None:
+        self._add_one(statement, 'content', content, self._content_keys)
+
+    def content_index_add_one(self, main_algo: str, content: Content) -> None:
+        query = 'INSERT INTO content_by_{algo} ({cols}) VALUES ({values})' \
+            .format(algo=main_algo, cols=', '.join(self._content_pk),
+                    values=', '.join('%s' for _ in self._content_pk))
+        self._execute_and_retry(
+            query, [content.get_hash(algo) for algo in self._content_pk])
 
     def content_get_pks_from_single_hash(
             self, algo: str, hash_: bytes) -> List[Row]:
         assert algo in HASH_ALGORITHMS
         query = 'SELECT * FROM content_by_{algo} WHERE {algo} = %s'.format(
             algo=algo)
-        return list(self.execute_and_retry(query, [hash_]))
+        return list(self._execute_and_retry(query, [hash_]))
 
-    _revision_parent_keys = ['id', 'parent_rank', 'parent_id']
-
-    @_prepared_exists_statement('revision')
-    def revision_missing(self, ids: List[bytes], *, statement) -> List[bytes]:
-        return self._missing(statement, ids)
-
-    @_prepared_insert_statement('revision_parent', _revision_parent_keys)
-    def revision_parent_add_one(
-            self, id_: Sha1Git, parent_rank: int, parent_id: Sha1Git, *,
-            statement) -> None:
-        self.execute_and_retry(
-            statement, [id_, parent_rank, parent_id])
+    ##########################
+    # 'revision' table
+    ##########################
 
     _revision_keys = [
         'id', 'date', 'committer_date', 'type', 'directory', 'message',
         'author', 'committer',
         'synthetic', 'metadata']
+
+    @_prepared_exists_statement('revision')
+    def revision_missing(self, ids: List[bytes], *, statement) -> List[bytes]:
+        return self._missing(statement, ids)
 
     @_prepared_insert_statement('revision', _revision_keys)
     def revision_add_one(self, revision: Dict[str, Any], *, statement) -> None:
@@ -235,23 +238,40 @@ class CqlRunner:
 
     @_prepared_statement('SELECT id FROM revision WHERE id IN ?')
     def revision_get_ids(self, revision_ids, *, statement) -> ResultSet:
-        return self.execute_and_retry(
+        return self._execute_and_retry(
             statement, [revision_ids])
 
     @_prepared_statement('SELECT * FROM revision WHERE id IN ?')
     def revision_get(self, revision_ids, *, statement) -> ResultSet:
-        return self.execute_and_retry(
+        return self._execute_and_retry(
             statement, [revision_ids])
-
-    @_prepared_statement('SELECT parent_id FROM revision_parent WHERE id = ?')
-    def revision_get_parents(
-            self, revision_id: Sha1Git, *, statement) -> ResultSet:
-        return self.execute_and_retry(
-            statement, [revision_id])
 
     @_prepared_statement('SELECT * FROM revision WHERE token(id) > ? LIMIT 1')
     def revision_get_random(self, *, statement) -> Optional[Row]:
         return self._get_random_row(statement)
+
+    ##########################
+    # 'revision_parent' table
+    ##########################
+
+    _revision_parent_keys = ['id', 'parent_rank', 'parent_id']
+
+    @_prepared_insert_statement('revision_parent', _revision_parent_keys)
+    def revision_parent_add_one(
+            self, id_: Sha1Git, parent_rank: int, parent_id: Sha1Git, *,
+            statement) -> None:
+        self._execute_and_retry(
+            statement, [id_, parent_rank, parent_id])
+
+    @_prepared_statement('SELECT parent_id FROM revision_parent WHERE id = ?')
+    def revision_parent_get(
+            self, revision_id: Sha1Git, *, statement) -> ResultSet:
+        return self._execute_and_retry(
+            statement, [revision_id])
+
+    ##########################
+    # 'release' table
+    ##########################
 
     _release_keys = [
         'id', 'target', 'target_type', 'date', 'name', 'message', 'author',
@@ -267,11 +287,15 @@ class CqlRunner:
 
     @_prepared_statement('SELECT * FROM release WHERE id in ?')
     def release_get(self, release_ids: List[str], *, statement) -> None:
-        return self.execute_and_retry(statement, [release_ids])
+        return self._execute_and_retry(statement, [release_ids])
 
     @_prepared_statement('SELECT * FROM release WHERE token(id) > ? LIMIT 1')
     def release_get_random(self, *, statement) -> Optional[Row]:
         return self._get_random_row(statement)
+
+    ##########################
+    # 'directory' table
+    ##########################
 
     _directory_keys = ['id']
 
@@ -283,26 +307,34 @@ class CqlRunner:
     def directory_add_one(self, directory_id: Sha1Git, *, statement) -> None:
         """Called after all calls to directory_entry_add_one, to
         commit/finalize the directory."""
-        self.execute_and_retry(statement, [directory_id])
-        self.increment_counter('directory', 1)
+        self._execute_and_retry(statement, [directory_id])
+        self._increment_counter('directory', 1)
+
+    @_prepared_statement('SELECT * FROM directory WHERE token(id) > ? LIMIT 1')
+    def directory_get_random(self, *, statement) -> Optional[Row]:
+        return self._get_random_row(statement)
+
+    ##########################
+    # 'directory_entry' table
+    ##########################
 
     _directory_entry_keys = ['directory_id', 'name', 'type', 'target', 'perms']
 
     @_prepared_insert_statement('directory_entry', _directory_entry_keys)
     def directory_entry_add_one(
             self, entry: Dict[str, Any], *, statement) -> None:
-        self.execute_and_retry(
+        self._execute_and_retry(
             statement, [entry[key] for key in self._directory_entry_keys])
 
     @_prepared_statement('SELECT * FROM directory_entry '
                          'WHERE directory_id IN ?')
     def directory_entry_get(self, directory_ids, *, statement) -> ResultSet:
-        return self.execute_and_retry(
+        return self._execute_and_retry(
             statement, [directory_ids])
 
-    @_prepared_statement('SELECT * FROM directory WHERE token(id) > ? LIMIT 1')
-    def directory_get_random(self, *, statement) -> Optional[Row]:
-        return self._get_random_row(statement)
+    ##########################
+    # 'snapshot' table
+    ##########################
 
     _snapshot_keys = ['id']
 
@@ -312,15 +344,28 @@ class CqlRunner:
 
     @_prepared_insert_statement('snapshot', _snapshot_keys)
     def snapshot_add_one(self, snapshot_id: Sha1Git, *, statement) -> None:
-        self.execute_and_retry(statement, [snapshot_id])
-        self.increment_counter('snapshot', 1)
+        self._execute_and_retry(statement, [snapshot_id])
+        self._increment_counter('snapshot', 1)
+
+    @_prepared_statement('SELECT * FROM snapshot '
+                         'WHERE id = ?')
+    def snapshot_get(self, snapshot_id: Sha1Git, *, statement) -> ResultSet:
+        return self._execute_and_retry(statement, [snapshot_id])
+
+    @_prepared_statement('SELECT * FROM snapshot WHERE token(id) > ? LIMIT 1')
+    def snapshot_get_random(self, *, statement) -> Optional[Row]:
+        return self._get_random_row(statement)
+
+    ##########################
+    # 'snapshot_branch' table
+    ##########################
 
     _snapshot_branch_keys = ['snapshot_id', 'name', 'target_type', 'target']
 
     @_prepared_insert_statement('snapshot_branch', _snapshot_branch_keys)
     def snapshot_branch_add_one(
             self, branch: Dict[str, Any], *, statement) -> None:
-        self.execute_and_retry(
+        self._execute_and_retry(
             statement, [branch[key] for key in self._snapshot_branch_keys])
 
     @_prepared_statement('SELECT ascii_bins_count(target_type) AS counts '
@@ -328,12 +373,7 @@ class CqlRunner:
                          'WHERE snapshot_id = ? ')
     def snapshot_count_branches(
             self, snapshot_id: Sha1Git, *, statement) -> ResultSet:
-        return self.execute_and_retry(statement, [snapshot_id])
-
-    @_prepared_statement('SELECT * FROM snapshot '
-                         'WHERE id = ?')
-    def snapshot_get(self, snapshot_id: Sha1Git, *, statement) -> ResultSet:
-        return self.execute_and_retry(statement, [snapshot_id])
+        return self._execute_and_retry(statement, [snapshot_id])
 
     @_prepared_statement('SELECT * FROM snapshot_branch '
                          'WHERE snapshot_id = ? AND name >= ?'
@@ -341,41 +381,88 @@ class CqlRunner:
     def snapshot_branch_get(
             self, snapshot_id: Sha1Git, from_: bytes, limit: int, *,
             statement) -> None:
-        return self.execute_and_retry(statement, [snapshot_id, from_, limit])
+        return self._execute_and_retry(statement, [snapshot_id, from_, limit])
 
-    @_prepared_statement('SELECT * FROM snapshot WHERE token(id) > ? LIMIT 1')
-    def snapshot_get_random(self, *, statement) -> Optional[Row]:
-        return self._get_random_row(statement)
+    ##########################
+    # 'origin' table
+    ##########################
 
     origin_keys = ['sha1', 'url', 'type', 'next_visit_id']
 
     @_prepared_statement('INSERT INTO origin (sha1, url, next_visit_id) '
                          'VALUES (?, ?, 1) IF NOT EXISTS')
     def origin_add_one(self, origin: Dict[str, Any], *, statement) -> None:
-        self.execute_and_retry(
+        self._execute_and_retry(
             statement, [hash_url(origin['url']), origin['url']])
-        self.increment_counter('origin', 1)
+        self._increment_counter('origin', 1)
 
     @_prepared_statement('SELECT * FROM origin WHERE sha1 = ?')
     def origin_get_by_sha1(self, sha1: bytes, *, statement) -> ResultSet:
-        return self.execute_and_retry(statement, [sha1])
+        return self._execute_and_retry(statement, [sha1])
 
     def origin_get_by_url(self, url: str) -> ResultSet:
         return self.origin_get_by_sha1(hash_url(url))
+
+    @_prepared_statement(
+        f'SELECT token(sha1) AS tok, {", ".join(origin_keys)} '
+        f'FROM origin WHERE token(sha1) >= ? LIMIT ?')
+    def origin_list(
+            self, start_token: int, limit: int, *, statement) -> ResultSet:
+        return self._execute_and_retry(
+            statement, [start_token, limit])
+
+    @_prepared_statement('SELECT * FROM origin')
+    def origin_iter_all(self, *, statement) -> ResultSet:
+        return self._execute_and_retry(statement, [])
+
+    @_prepared_statement('SELECT next_visit_id FROM origin WHERE sha1 = ?')
+    def _origin_get_next_visit_id(
+            self, origin_sha1: bytes, *, statement) -> int:
+        rows = list(self._execute_and_retry(statement, [origin_sha1]))
+        assert len(rows) == 1  # TODO: error handling
+        return rows[0].next_visit_id
+
+    @_prepared_statement('UPDATE origin SET next_visit_id=? '
+                         'WHERE sha1 = ? IF next_visit_id=?')
+    def origin_generate_unique_visit_id(
+            self, origin_url: str, *, statement) -> int:
+        origin_sha1 = hash_url(origin_url)
+        next_id = self._origin_get_next_visit_id(origin_sha1)
+        while True:
+            res = list(self._execute_and_retry(
+                statement, [next_id+1, origin_sha1, next_id]))
+            assert len(res) == 1
+            if res[0].applied:
+                # No data race
+                return next_id
+            else:
+                # Someone else updated it before we did, let's try again
+                next_id = res[0].next_visit_id
+                # TODO: abort after too many attempts
+
+        return next_id
+
+    ##########################
+    # 'origin_visit' table
+    ##########################
+
+    _origin_visit_keys = [
+        'origin', 'visit', 'type', 'date', 'status', 'metadata', 'snapshot']
+    _origin_visit_update_keys = [
+        'type', 'date', 'status', 'metadata', 'snapshot']
 
     @_prepared_statement('SELECT * FROM origin_visit '
                          'WHERE origin = ? AND visit > ?')
     def _origin_visit_get_no_limit(
             self, origin_url: str, last_visit: int, *, statement) -> ResultSet:
-        return self.execute_and_retry(statement, [origin_url, last_visit])
+        return self._execute_and_retry(statement, [origin_url, last_visit])
 
     @_prepared_statement('SELECT * FROM origin_visit '
-                         'WHERE origin = ? AND visit > ?'
-                         'LIMIT ?')
+                         'WHERE origin = ? AND visit > ? LIMIT ?')
     def _origin_visit_get_limit(
             self, origin_url: str, last_visit: int, limit: int, *, statement
             ) -> ResultSet:
-        return self.execute_and_retry(
+        return self._execute_and_retry(
             statement, [origin_url, last_visit, limit])
 
     def origin_visit_get(
@@ -406,59 +493,15 @@ class CqlRunner:
 
         query = ('UPDATE origin_visit SET ' + ', '.join(set_parts) +
                  ' WHERE origin = %s AND visit = %s')
-        self.execute_and_retry(
+        self._execute_and_retry(
             query, args + [origin_url, visit_id])
-
-    @_prepared_statement(
-        f'SELECT token(sha1) AS tok, {", ".join(origin_keys)} '
-        f'FROM origin WHERE token(sha1) >= ? LIMIT ?')
-    def origin_list(
-            self, start_token: int, limit: int, *, statement) -> ResultSet:
-        return self.execute_and_retry(
-            statement, [start_token, limit])
-
-    @_prepared_statement('SELECT * FROM origin')
-    def origin_iter_all(self, *, statement) -> ResultSet:
-        return self.execute_and_retry(statement, [])
-
-    @_prepared_statement('SELECT next_visit_id FROM origin WHERE sha1 = ?')
-    def _origin_get_next_visit_id(
-            self, origin_sha1: bytes, *, statement) -> int:
-        rows = list(self.execute_and_retry(statement, [origin_sha1]))
-        assert len(rows) == 1  # TODO: error handling
-        return rows[0].next_visit_id
-
-    @_prepared_statement('UPDATE origin SET next_visit_id=? '
-                         'WHERE sha1 = ? IF next_visit_id=?')
-    def origin_generate_unique_visit_id(
-            self, origin_url: str, *, statement) -> int:
-        origin_sha1 = hash_url(origin_url)
-        next_id = self._origin_get_next_visit_id(origin_sha1)
-        while True:
-            res = list(self.execute_and_retry(
-                statement, [next_id+1, origin_sha1, next_id]))
-            assert len(res) == 1
-            if res[0].applied:
-                # No data race
-                return next_id
-            else:
-                # Someone else updated it before we did, let's try again
-                next_id = res[0].next_visit_id
-                # TODO: abort after too many attempts
-
-        return next_id
-
-    _origin_visit_keys = [
-        'origin', 'visit', 'type', 'date', 'status', 'metadata', 'snapshot']
-    _origin_visit_update_keys = [
-        'type', 'date', 'status', 'metadata', 'snapshot']
 
     @_prepared_insert_statement('origin_visit', _origin_visit_keys)
     def origin_visit_add_one(
             self, visit: Dict[str, Any], *, statement) -> None:
-        self.execute_and_retry(
+        self._execute_and_retry(
             statement, [visit[key] for key in self._origin_visit_keys])
-        self.increment_counter('origin_visit', 1)
+        self._increment_counter('origin_visit', 1)
 
     @_prepared_statement(
         'UPDATE origin_visit SET ' +
@@ -466,12 +509,12 @@ class CqlRunner:
         ' WHERE origin = ? AND visit = ?')
     def origin_visit_upsert(
             self, visit: Dict[str, Any], *, statement) -> None:
-        self.execute_and_retry(
+        self._execute_and_retry(
             statement,
             [visit.get(key) for key in self._origin_visit_update_keys]
             + [visit['origin'], visit['visit']])
         # TODO:  check if there is already one
-        self.increment_counter('origin_visit', 1)
+        self._increment_counter('origin_visit', 1)
 
     @_prepared_statement('SELECT * FROM origin_visit '
                          'WHERE origin = ? AND visit = ?')
@@ -479,7 +522,7 @@ class CqlRunner:
             self, origin_url: str, visit_id: int, *,
             statement) -> Optional[Row]:
         # TODO: error handling
-        rows = list(self.execute_and_retry(statement, [origin_url, visit_id]))
+        rows = list(self._execute_and_retry(statement, [origin_url, visit_id]))
         if rows:
             return rows[0]
         else:
@@ -488,7 +531,7 @@ class CqlRunner:
     @_prepared_statement('SELECT * FROM origin_visit '
                          'WHERE origin = ?')
     def origin_visit_get_all(self, origin_url: str, *, statement) -> ResultSet:
-        return self.execute_and_retry(
+        return self._execute_and_retry(
             statement, [origin_url])
 
     @_prepared_statement('SELECT * FROM origin_visit WHERE origin = ?')
@@ -496,7 +539,7 @@ class CqlRunner:
             self, origin: str, allowed_statuses: Optional[Iterable[str]],
             require_snapshot: bool, *, statement) -> Optional[Row]:
         # TODO: do the ordering and filtering in Cassandra
-        rows = list(self.execute_and_retry(statement, [origin]))
+        rows = list(self._execute_and_retry(statement, [origin]))
 
         rows.sort(key=lambda row: (row.date, row.visit), reverse=True)
 
@@ -516,12 +559,12 @@ class CqlRunner:
     @_prepared_statement('SELECT * FROM origin_visit WHERE token(origin) >= ?')
     def _origin_visit_iter_from(
             self, min_token: int, *, statement) -> Generator[Row, None, None]:
-        yield from self.execute_and_retry(statement, [min_token])
+        yield from self._execute_and_retry(statement, [min_token])
 
     @_prepared_statement('SELECT * FROM origin_visit WHERE token(origin) < ?')
     def _origin_visit_iter_to(
             self, max_token: int, *, statement) -> Generator[Row, None, None]:
-        yield from self.execute_and_retry(statement, [max_token])
+        yield from self._execute_and_retry(statement, [max_token])
 
     def origin_visit_iter(
             self, start_token: int) -> Generator[Row, None, None]:
@@ -530,18 +573,22 @@ class CqlRunner:
         yield from self._origin_visit_iter_from(start_token)
         yield from self._origin_visit_iter_to(start_token)
 
+    ##########################
+    # 'tool' table
+    ##########################
+
     _tool_keys = ['id', 'name', 'version', 'configuration']
 
     @_prepared_insert_statement('tool_by_uuid', _tool_keys)
     def tool_by_uuid_add_one(self, tool: Dict[str, Any], *, statement) -> None:
-        self.execute_and_retry(
+        self._execute_and_retry(
             statement, [tool[key] for key in self._tool_keys])
 
     @_prepared_insert_statement('tool', _tool_keys)
     def tool_add_one(self, tool: Dict[str, Any], *, statement) -> None:
-        self.execute_and_retry(
+        self._execute_and_retry(
             statement, [tool[key] for key in self._tool_keys])
-        self.increment_counter('tool', 1)
+        self._increment_counter('tool', 1)
 
     @_prepared_statement('SELECT id FROM tool '
                          'WHERE name = ? AND version = ? '
@@ -549,7 +596,7 @@ class CqlRunner:
     def tool_get_one_uuid(
             self, name: str, version: str, configuration: Dict[str, Any], *,
             statement) -> Optional[str]:
-        rows = list(self.execute_and_retry(
+        rows = list(self._execute_and_retry(
             statement, [name, version, configuration]))
         if rows:
             assert len(rows) == 1
@@ -557,8 +604,16 @@ class CqlRunner:
         else:
             return None
 
+    ##########################
+    # Miscellaneous
+    ##########################
+
+    @_prepared_statement('SELECT uuid() FROM revision LIMIT 1;')
+    def check_read(self, *, statement):
+        self._execute_and_retry(statement, [])
+
     @_prepared_statement('SELECT object_type, count FROM object_count '
                          'WHERE partition_key=0')
     def stat_counters(self, *, statement) -> ResultSet:
-        return self.execute_and_retry(
+        return self._execute_and_retry(
             statement, [])
