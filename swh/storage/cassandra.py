@@ -366,6 +366,12 @@ def prepared_insert_statement(table_name: str, columns: List[str]):
     )
 
 
+def prepared_exists_statement(table_name: str):
+    """Shorthand for using `prepared_statement` for queries that only
+    check which ids in a list exist in the table."""
+    return prepared_statement(f'SELECT id FROM {table_name} WHERE id IN ?')
+
+
 class CassandraProxy:
     def __init__(self, hosts: List[str], keyspace: str, port: int):
         self._cluster = Cluster(
@@ -424,10 +430,25 @@ class CassandraProxy:
         else:
             return None
 
+    def _missing(self, statement, ids):
+        res = self.execute_and_retry(statement, [ids])
+        found_ids = {id_ for (id_,) in res}
+        return [id_ for id_ in ids if id_ not in found_ids]
+
+    @prepared_statement('SELECT uuid() FROM revision LIMIT 1;')
+    def check_read(self, *, statement):
+        self.execute_and_retry(statement, [])
+
     _content_pk = ['sha1', 'sha1_git', 'sha256', 'blake2s256']
     _content_keys = [
         'sha1', 'sha1_git', 'sha256', 'blake2s256', 'length',
         'ctime', 'status']
+
+    @prepared_statement('SELECT sha1_git FROM content_by_sha1_git '
+                        'WHERE sha1_git IN ?')
+    def content_missing_by_sha1_git(
+            self, ids: List[bytes], *, statement) -> List[bytes]:
+        return self._missing(statement, ids)
 
     @prepared_insert_statement('content', _content_keys)
     def content_add_one(self, content, *, statement) -> None:
@@ -475,6 +496,10 @@ class CassandraProxy:
 
     _revision_parent_keys = ['id', 'parent_rank', 'parent_id']
 
+    @prepared_exists_statement('revision')
+    def revision_missing(self, ids: List[bytes], *, statement) -> List[bytes]:
+        return self._missing(statement, ids)
+
     @prepared_insert_statement('revision_parent', _revision_parent_keys)
     def revision_parent_add_one(
             self, id_: Sha1Git, parent_rank: int, parent_id: Sha1Git, *,
@@ -515,6 +540,10 @@ class CassandraProxy:
         'id', 'target', 'target_type', 'date', 'name', 'message', 'author',
         'synthetic']
 
+    @prepared_exists_statement('release')
+    def release_missing(self, ids: List[bytes], *, statement) -> List[bytes]:
+        return self._missing(statement, ids)
+
     @prepared_insert_statement('release', _release_keys)
     def release_add_one(self, release: Dict[str, Any], *, statement) -> None:
         self._add_one(statement, 'release', release, self._release_keys)
@@ -528,6 +557,10 @@ class CassandraProxy:
         return self._get_random_row(statement)
 
     _directory_keys = ['id']
+
+    @prepared_exists_statement('directory')
+    def directory_missing(self, ids: List[bytes], *, statement) -> List[bytes]:
+        return self._missing(statement, ids)
 
     @prepared_insert_statement('directory', _directory_keys)
     def directory_add_one(self, directory_id: Sha1Git, *, statement) -> None:
@@ -556,9 +589,9 @@ class CassandraProxy:
 
     _snapshot_keys = ['id']
 
-    @prepared_statement('SELECT id FROM snapshot WHERE id=? LIMIT 1')
-    def snapshot_exists(self, snapshot_id: Sha1Git, *, statement) -> bool:
-        return len(list(self.execute_and_retry(statement, [snapshot_id]))) > 0
+    @prepared_exists_statement('snapshot')
+    def snapshot_missing(self, ids: List[bytes], *, statement) -> List[bytes]:
+        return self._missing(statement, ids)
 
     @prepared_insert_statement('snapshot', _snapshot_keys)
     def snapshot_add_one(self, snapshot_id: Sha1Git, *, statement) -> None:
@@ -613,12 +646,62 @@ class CassandraProxy:
     def origin_get_by_url(self, url: str) -> ResultSet:
         return self.origin_get_by_sha1(hash_url(url))
 
+    @prepared_statement('SELECT * FROM origin_visit '
+                        'WHERE origin = ? AND visit > ?')
+    def _origin_visit_get_no_limit(
+            self, origin_url: str, last_visit: int, *, statement) -> ResultSet:
+        return self.execute_and_retry(statement, [origin_url, last_visit])
+
+    @prepared_statement('SELECT * FROM origin_visit '
+                        'WHERE origin = ? AND visit > ?'
+                        'LIMIT ?')
+    def _origin_visit_get_limit(
+            self, origin_url: str, last_visit: int, limit: int, *, statement
+            ) -> ResultSet:
+        return self.execute_and_retry(
+            statement, [origin_url, last_visit, limit])
+
+    def origin_visit_get(
+            self, origin_url: str, last_visit: Optional[int],
+            limit: Optional[int]) -> ResultSet:
+        if last_visit is None:
+            last_visit = -1
+
+        if limit is None:
+            return self._origin_visit_get_no_limit(origin_url, last_visit)
+        else:
+            return self._origin_visit_get_limit(origin_url, last_visit, limit)
+
+    def origin_visit_update(
+            self, origin_url: str, visit_id: int, updates: Dict[str, Any]
+            ) -> ResultSet:
+        set_parts = []
+        args: List[Any] = []
+        for (column, value) in updates.items():
+            set_parts.append(f'{column} = %s')
+            if column == 'metadata':
+                args.append(json.dumps(value))
+            else:
+                args.append(value)
+
+        if not set_parts:
+            return
+
+        query = ('UPDATE origin_visit SET ' + ', '.join(set_parts) +
+                 ' WHERE origin = %s AND visit = %s')
+        self.execute_and_retry(
+            query, args + [origin_url, visit_id])
+
     @prepared_statement(f'SELECT token(sha1) AS tok, {", ".join(origin_keys)} '
                         f'FROM origin WHERE token(sha1) >= ? LIMIT ?')
     def origin_list(
             self, start_token: int, limit: int, *, statement) -> ResultSet:
         return self.execute_and_retry(
             statement, [start_token, limit])
+
+    @prepared_statement('SELECT * FROM origin')
+    def origin_iter_all(self, *, statement) -> ResultSet:
+        return self.execute_and_retry(statement, [])
 
     @prepared_statement('SELECT next_visit_id FROM origin WHERE sha1 = ?')
     def _origin_get_next_visit_id(
@@ -706,7 +789,7 @@ class CassandraProxy:
                     and row.status not in allowed_statuses:
                 continue
             if row.snapshot is not None and \
-                    not self.snapshot_exists(row.snapshot):
+                    self.snapshot_missing([row.snapshot]):
                 raise ValueError('visit references unknown snapshot')
             return row
         else:
@@ -776,19 +859,9 @@ class CassandraStorage:
             self.journal_writer = None
 
     def check_config(self, check_write=False):
-        self._proxy.execute_and_retry(
-            'SELECT uuid() FROM revision LIMIT 1;', [])
+        self._proxy.check_read()
 
         return True
-
-    def _missing(self, table, ids):
-        res = self._proxy.execute_and_retry(
-            'SELECT id FROM %s WHERE id IN (%s)' %
-            (table, ', '.join('%s' for _ in ids)),
-            ids
-        )
-        found_ids = {id_ for (id_,) in res}
-        return [id_ for id_ in ids if id_ not in found_ids]
 
     def _content_add(self, contents, with_data):
         contents = [Content.from_dict(c) for c in contents]
@@ -977,7 +1050,7 @@ class CassandraStorage:
         return {'directory:add': len(missing)}
 
     def directory_missing(self, directories):
-        return self._missing('directory', directories)
+        return self._proxy.directory_missing(directories)
 
     def _join_dentry_to_content(self, dentry):
         keys = (
@@ -1080,7 +1153,7 @@ class CassandraStorage:
             return {'revision:add': len(revisions)}
 
     def revision_missing(self, revisions):
-        return self._missing('revision', revisions)
+        return self._proxy.revision_missing(revisions)
 
     def revision_get(self, revisions):
         rows = self._proxy.revision_get(revisions)
@@ -1185,7 +1258,7 @@ class CassandraStorage:
         return {'release:add': len(missing)}
 
     def release_missing(self, releases):
-        return self._missing('release', releases)
+        return self._proxy.release_missing(releases)
 
     def release_get(self, releases):
         rows = self._proxy.release_get(releases)
@@ -1204,7 +1277,7 @@ class CassandraStorage:
     def snapshot_add(self, snapshots, origin=None, visit=None):
         count = 0
         for snapshot in snapshots:
-            if self._proxy.snapshot_exists(snapshot['id']):
+            if not self._proxy.snapshot_missing([snapshot['id']]):
                 continue
 
             count += 1
@@ -1248,12 +1321,12 @@ class CassandraStorage:
 
         if visit:
             assert visit['snapshot']
-            if not self._proxy.snapshot_exists(visit['snapshot']):
+            if self._proxy.snapshot_missing([visit['snapshot']]):
                 raise ValueError('Visit references unknown snapshot')
             return self.snapshot_get_branches(visit['snapshot'])
 
     def snapshot_count_branches(self, snapshot_id):
-        if not self._proxy.snapshot_exists(snapshot_id):
+        if self._proxy.snapshot_missing([snapshot_id]):
             # Makes sure we don't fetch branches for a snapshot that is
             # being added.
             return None
@@ -1267,7 +1340,7 @@ class CassandraStorage:
 
     def snapshot_get_branches(self, snapshot_id, branches_from=b'',
                               branches_count=1000, target_types=None):
-        if not self._proxy.snapshot_exists(snapshot_id):
+        if self._proxy.snapshot_missing([snapshot_id]):
             # Makes sure we don't fetch branches for a snapshot that is
             # being added.
             return None
@@ -1317,35 +1390,27 @@ class CassandraStorage:
     def snapshot_get_random(self):
         return self._proxy.snapshot_get_random().id
 
-    OBJECT_FIND_TYPES = ('revision', 'release', 'content', 'directory')
-    # Mind the order, revision is the most likely one for a given ID,
-    # so we check revisions first.
-
     def object_find_by_sha1_git(self, ids):
         results = {id_: [] for id_ in ids}
         missing_ids = set(ids)
 
-        for object_type in self.OBJECT_FIND_TYPES:
-            if object_type == 'content':
-                query = (
-                    'SELECT sha1 AS id, sha1_git FROM content_by_sha1_git '
-                    'WHERE sha1_git IN ({values})')
-            else:
-                query = (
-                    'SELECT id, id AS sha1_git FROM {table} '
-                    'WHERE id IN ({values})')
-            query = query.format(
-                table=object_type,
-                values=', '.join('%s' for _ in missing_ids))
-            rows = self._proxy.execute_and_retry(
-                query, missing_ids)
-            for row in rows:
-                results[row.sha1_git].append({
-                    'id': row.id,
-                    'sha1_git': row.sha1_git,
+        # Mind the order, revision is the most likely one for a given ID,
+        # so we check revisions first.
+        queries = [
+            ('revision', self._proxy.revision_missing),
+            ('release', self._proxy.release_missing),
+            ('content', self._proxy.content_missing_by_sha1_git),
+            ('directory', self._proxy.directory_missing),
+        ]
+
+        for (object_type, query_fn) in queries:
+            found_ids = missing_ids - set(query_fn(missing_ids))
+            for sha1_git in found_ids:
+                results[sha1_git].append({
+                    'sha1_git': sha1_git,
                     'type': object_type,
                 })
-                missing_ids.remove(row.sha1_git)
+                missing_ids.remove(sha1_git)
 
             if not missing_ids:
                 # We found everything, skipping the next queries.
@@ -1430,7 +1495,7 @@ class CassandraStorage:
     def origin_search(self, url_pattern, offset=0, limit=50,
                       regexp=False, with_visit=False):
         # TODO: do some filtering on the Cassandra side
-        origins = self._proxy.execute_and_retry('SELECT * FROM origin', [])
+        origins = self._proxy.origin_iter_all()
         if regexp:
             pat = re.compile(url_pattern)
             origins = [orig for orig in origins if pat.search(orig.url)]
@@ -1530,27 +1595,12 @@ class CassandraStorage:
         if snapshot:
             updates['snapshot'] = snapshot
 
-        set_parts = []
-        args = []
-        for (column, value) in updates.items():
-            set_parts.append(f'{column} = %s')
-            if column == 'metadata':
-                args.append(json.dumps(value))
-            else:
-                args.append(value)
-
         visit = attr.evolve(visit, **updates)
 
         if self.journal_writer:
             self.journal_writer.write_update('origin_visit', visit)
 
-        if not set_parts:
-            return
-
-        query = ('UPDATE origin_visit SET ' + ', '.join(set_parts) +
-                 ' WHERE origin = %s AND visit = %s')
-        self._proxy.execute_and_retry(
-            query, args + [origin_url, visit_id])
+        self._proxy.origin_visit_update(origin_url, visit_id, updates)
 
     def origin_visit_upsert(self, visits):
         visits = [visit.copy() for visit in visits]
@@ -1579,23 +1629,7 @@ class CassandraStorage:
         }
 
     def origin_visit_get(self, origin, last_visit=None, limit=None):
-        query_parts = ['SELECT * FROM origin_visit WHERE', 'origin=%s']
-        args = [origin]
-
-        if last_visit:
-            query_parts.append('AND visit > %s')
-            args.append(last_visit)
-
-        # FIXME: is this a noop? (given the table def, it's already ordered)
-        query_parts.append('ORDER BY visit ASC')
-
-        if limit:
-            query_parts.append('LIMIT %s')
-            args.append(limit)
-
-        query_parts.append('ALLOW FILTERING')
-
-        rows = self._proxy.execute_and_retry(' '.join(query_parts), args)
+        rows = self._proxy.origin_visit_get(origin, last_visit, limit)
 
         yield from map(self._format_origin_visit_row, rows)
 
