@@ -144,7 +144,7 @@ def swh_storage(cassandra_cluster):
 
     yield storage
 
-    storage._proxy._session.execute(
+    storage._cql_runner._session.execute(
         'DROP KEYSPACE "%s"' % keyspace)
 
 
