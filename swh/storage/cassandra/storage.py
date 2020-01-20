@@ -231,6 +231,7 @@ class CassandraStorage:
         return self._cql_runner.content_get_random().sha1_git
 
     def directory_add(self, directories):
+        directories = list(directories)
         missing = self.directory_missing([dir_['id'] for dir_ in directories])
         directories = [dir_ for dir_ in directories if dir_['id'] in missing]
 
@@ -327,6 +328,7 @@ class CassandraStorage:
         return self._cql_runner.directory_get_random().id
 
     def revision_add(self, revisions, check_missing=True):
+        revisions = list(revisions)
         if check_missing:
             missing = self.revision_missing([rev['id'] for rev in revisions])
             revisions = [rev for rev in revisions if rev['id'] in missing]
@@ -446,6 +448,7 @@ class CassandraStorage:
         return self._cql_runner.revision_get_random().id
 
     def release_add(self, releases):
+        releases = list(releases)
         missing = self.release_missing([rel['id'] for rel in releases])
         releases = [rel for rel in releases if rel['id'] in missing]
 
@@ -478,6 +481,7 @@ class CassandraStorage:
         return self._cql_runner.release_get_random().id
 
     def snapshot_add(self, snapshots, origin=None, visit=None):
+        snapshots = list(snapshots)
         count = 0
         for snapshot in snapshots:
             if not self._cql_runner.snapshot_missing([snapshot['id']]):
@@ -716,6 +720,7 @@ class CassandraStorage:
             for orig in origins[offset:offset+limit]]
 
     def origin_add(self, origins):
+        origins = list(origins)
         if any('id' in origin for origin in origins):
             raise ValueError('Origins must not already have an id.')
         results = []
