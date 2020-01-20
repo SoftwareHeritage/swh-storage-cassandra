@@ -5,6 +5,7 @@
 
 import warnings
 
+
 class HashCollision(Exception):
     pass
 
