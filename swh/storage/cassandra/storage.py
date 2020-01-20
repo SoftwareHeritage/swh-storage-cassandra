@@ -337,9 +337,6 @@ class CassandraStorage:
             self.journal_writer.write_additions('revision', revisions)
 
         for revision in revisions:
-            if check_missing and revision['id'] not in missing:
-                continue
-
             revision = revision_to_db(revision)
 
             if revision:
@@ -352,10 +349,7 @@ class CassandraStorage:
                 # parents
                 self._cql_runner.revision_add_one(revision)
 
-        if check_missing:
-            return {'revision:add': len(missing)}
-        else:
-            return {'revision:add': len(revisions)}
+        return {'revision:add': len(revisions)}
 
     def revision_missing(self, revisions):
         return self._cql_runner.revision_missing(revisions)
