@@ -661,17 +661,8 @@ class CassandraStorage:
         else:
             return_single = False
 
-        # Sanity check to be error-compatible with the pgsql backend
-        if any('id' in origin for origin in origins) \
-                and not all('id' in origin for origin in origins):
-            raise ValueError(
-                'Either all origins or none at all should have an "id".')
-        if any('type' in origin and 'url' in origin for origin in origins) \
-                and not all('type' in origin and 'url' in origin
-                            for origin in origins):
-            raise ValueError(
-                'Either all origins or none at all should have a '
-                '"type" and an "url".')
+        if any('id' in origin for origin in origins):
+            raise ValueError('Origin ids are not supported.')
 
         results = [self.origin_get_one(origin) for origin in origins]
 
