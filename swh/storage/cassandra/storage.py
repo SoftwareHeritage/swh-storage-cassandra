@@ -9,7 +9,6 @@ import random
 import re
 from typing import Any, Dict, Optional
 import uuid
-import warnings
 
 import attr
 import dateutil
@@ -763,17 +762,7 @@ class CassandraStorage:
 
         return origin_url
 
-    def origin_visit_add(self, origin, date=None, type=None, *, ts=None):
-        if ts is None:
-            if date is None:
-                raise TypeError('origin_visit_add expected 2 arguments.')
-        else:
-            assert date is None
-            warnings.warn("argument 'ts' of origin_visit_add was renamed "
-                          "to 'date' in v0.0.109.",
-                          DeprecationWarning)
-            date = ts
-
+    def origin_visit_add(self, origin, date=None, type=None):
         origin_url = origin  # TODO: rename the argument
 
         if isinstance(date, str):
