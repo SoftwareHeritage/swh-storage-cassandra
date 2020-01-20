@@ -78,6 +78,20 @@ class CassandraStorage:
         count_content_bytes_added = 0
 
         for content in contents:
+            # First insert to the objstorage, if the endpoint is
+            # `content_add` (as opposed to `content_add_metadata`).
+            # TODO: this should probably be done in concurrently to inserting
+            # in index tables (but still before the main table; so an entry is
+            # only added to the main table after everything else was
+            # successfully inserted.
+            count_contents += 1
+            if content.status != 'absent':
+                count_content_added += 1
+                if with_data:
+                    content_data = content.data
+                    count_content_bytes_added += len(content_data)
+                    self.objstorage.add(content_data, content.sha1)
+
             for algo in HASH_ALGORITHMS:
                 self._cql_runner.content_index_add_one(algo, content)
 
@@ -98,14 +112,6 @@ class CassandraStorage:
                     # There are more than the one we just inserted.
                     from .. import HashCollision
                     raise HashCollision(algo, content.get_hash(algo), pks)
-
-            count_contents += 1
-            if content.status != 'absent':
-                count_content_added += 1
-                if with_data:
-                    content_data = content.data
-                    count_content_bytes_added += len(content_data)
-                    self.objstorage.add(content_data, content.sha1)
 
         summary = {
             'content:add': count_content_added,
