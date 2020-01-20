@@ -124,7 +124,7 @@ class CassandraStorage:
         return summary
 
     def content_add(self, content):
-        content = [dict(c.items()) for c in content]  # semi-shallow copy
+        content = [c.copy() for c in content]  # semi-shallow copy
         for item in content:
             item['ctime'] = now()
         return self._content_add(content, with_data=True)
