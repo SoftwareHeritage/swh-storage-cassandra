@@ -478,7 +478,7 @@ class CqlRunner:
 
     def origin_visit_update(
             self, origin_url: str, visit_id: int, updates: Dict[str, Any]
-            ) -> ResultSet:
+            ) -> None:
         set_parts = []
         args: List[Any] = []
         for (column, value) in updates.items():
