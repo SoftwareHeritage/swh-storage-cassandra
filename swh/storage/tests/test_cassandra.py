@@ -93,8 +93,8 @@ def cassandra_cluster(tmpdir_factory):
         ],
         start_new_session=True,
         env={
-            'MAX_HEAP_SIZE': '200M',
-            'HEAP_NEWSIZE': '20M',
+            'MAX_HEAP_SIZE': '500M',
+            'HEAP_NEWSIZE': '100M',
             'JVM_OPTS': '-Xlog:gc=error:file=%s/gc.log' % cassandra_log
         },
         stdout=stdout,
@@ -143,9 +143,6 @@ def swh_storage(cassandra_cluster):
     )
 
     yield storage
-
-    storage._cql_runner._session.execute(
-        'DROP KEYSPACE "%s"' % keyspace)
 
 
 class TestCassandraStorage(_TestStorage):
