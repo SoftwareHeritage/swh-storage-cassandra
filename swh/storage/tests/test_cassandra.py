@@ -148,6 +148,7 @@ def swh_storage(cassandra_cluster):
         'DROP KEYSPACE "%s"' % keyspace)
 
 
+@pytest.mark.cassandra
 class TestCassandraStorage(_TestStorage):
     @pytest.mark.skip('postgresql-specific test')
     def test_content_add_db(self):
@@ -207,6 +208,7 @@ class TestCassandraStorage(_TestStorage):
         pass
 
 
+@pytest.mark.cassandra
 class TestCassandraStorageGeneratedData(_TestStorageGeneratedData):
     @pytest.mark.skip('Not supported by Cassandra')
     def test_origin_count(self):
