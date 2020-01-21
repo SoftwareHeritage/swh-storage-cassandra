@@ -110,7 +110,6 @@ class CqlRunner:
     MAX_RETRIES = 3
 
     def _execute_and_retry(self, statement, args) -> ResultSet:
-        # TODO: use Cassandra-driver to retry
         for nb_retries in range(self.MAX_RETRIES):
             try:
                 return self._session.execute(statement, args, timeout=100.)
